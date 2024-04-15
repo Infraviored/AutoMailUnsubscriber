@@ -28,7 +28,7 @@ Getting started with Unsubscribe Helper is straightforward. Follow these steps t
 
 1. **Clone the Repository**: Begin by cloning this repository to your local machine.
    ```
-   git clone <repository-url>
+   git clone https://github.com/Infraviored/AutoMailUnsubscriber.git
    ```
 2. **Install Dependencies**: Navigate into the cloned directory and install the required Python packages.
    ```
@@ -36,7 +36,7 @@ Getting started with Unsubscribe Helper is straightforward. Follow these steps t
    ```
 3. **Launch the Program**: Start the program by running the Python script.
    ```
-   python unsubscribe_helper.py
+   python AutoMailUnsubscriber.py
    ```
 
 ### Processing Your Emails
