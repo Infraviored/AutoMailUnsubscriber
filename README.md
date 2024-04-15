@@ -47,11 +47,12 @@ Getting started with Unsubscribe Helper is straightforward. Follow these steps t
 
 ### Reviewing Unsubscribe Links
 
-1. **Open the HTML File**: Once processing is complete, the program generates an HTML file (`unsubscribe_urls_<email>.html`) for each processed email account.
+1. **Open the HTML File**: Once processing is complete, the program generates an HTML file (`unsubscribe_urls_<email>.html`) for each processed email account. To see a live example of the generated HTML output, [click here](https://infraviored.github.io/AutoMailUnsubscriber/demo_unsub.html).
 2. **Review Links**: Open the generated HTML file in your preferred web browser. You'll see a list of unsubscribe links organized by domain, along with the distance metric indicating how closely related the link is to the unsubscribe trigger words.
 3. **Take Action**: Click through the links to visit the unsubscribe pages directly from your browser and manage your subscriptions as needed.
 
 By following these steps, you can quickly and efficiently review and act on unsubscribe links across multiple email accounts, helping you maintain a cleaner, more manageable inbox.
+
 
 ---
 
