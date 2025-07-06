@@ -169,15 +169,40 @@
         content.innerHTML = `
             <div class="scan-controls">
                 <div>
-                    <label for="num-emails-${safeEmailId}">Emails to scan:</label>
+                    <label for="scan-type-${safeEmailId}">Scan by:</label>
+                    <select id="scan-type-${safeEmailId}">
+                        <option value="number">Number of recent emails</option>
+                        <option value="date">Emails since a specific date</option>
+                    </select>
+                </div>
+                <div id="scan-by-number-${safeEmailId}">
+                    <label for="num-emails-${safeEmailId}">Number of emails:</label>
                     <input type="number" id="num-emails-${safeEmailId}" value="100" min="1">
+                </div>
+                <div id="scan-by-date-${safeEmailId}" style="display:none;">
+                    <label for="since-date-${safeEmailId}">Scan since:</label>
+                    <input type="date" id="since-date-${safeEmailId}">
+                </div>
+                <div>
                     <button id="scan-btn-${safeEmailId}">Scan Now</button>
                 </div>
                 <div id="status-${safeEmailId}" class="status-message"></div>
             </div>
+            <div class="scan-history-container" id="history-container-${safeEmailId}">
+                <h4>Scan History</h4>
+                <div id="history-list-${safeEmailId}"></div>
+            </div>
             <div id="results-${safeEmailId}" class="results-container"></div>
         `;
         tabContentsContainer.appendChild(content);
+
+        // Event listener for the new dropdown
+        document.getElementById(`scan-type-${safeEmailId}`).addEventListener('change', (e) => {
+            const scanType = e.target.value;
+            document.getElementById(`scan-by-number-${safeEmailId}`).style.display = scanType === 'number' ? 'block' : 'none';
+            document.getElementById(`scan-by-date-${safeEmailId}`).style.display = scanType === 'date' ? 'block' : 'none';
+        });
+
         document.getElementById(`scan-btn-${safeEmailId}`).onclick = () => handleScan(email);
         
         // 3. Fetch and Render Initial Data
@@ -234,24 +259,65 @@
         const safeEmailId = email.replace(/[@.]/g, '-');
         const statusDiv = document.getElementById(`status-${safeEmailId}`);
         const scanButton = document.getElementById(`scan-btn-${safeEmailId}`);
-        const numEmails = document.getElementById(`num-emails-${safeEmailId}`).value;
-
-        scanButton.disabled = true;
-        updateStatus(statusDiv.id, 'Scanning...', false);
-
-        const response = await fetch('/scan', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email_address: email, num_emails: numEmails })
-        });
-        const data = await response.json();
         
-        scanButton.disabled = false;
-        updateStatus(statusDiv.id, data.message, data.status !== 'OK');
-        if (data.status === 'OK') {
-            await fetchUnsubscribedLog(email);
-            renderResults(email, { links: data.links, last_scan_time: new Date().toISOString() });
+        const scanType = document.getElementById(`scan-type-${safeEmailId}`).value;
+        let scanParams = '';
+        if (scanType === 'number') {
+            const numEmails = document.getElementById(`num-emails-${safeEmailId}`).value;
+            scanParams = `num_emails=${numEmails}`;
+        } else {
+            const sinceDate = document.getElementById(`since-date-${safeEmailId}`).value;
+            if (!sinceDate) {
+                updateStatus(statusDiv.id, 'Please select a date.', true);
+                return;
+            }
+            scanParams = `since_date=${sinceDate}`;
         }
+
+        // --- UI Transformation for Progress ---
+        scanButton.disabled = true;
+        scanButton.style.background = 'linear-gradient(to right, #4CAF50 0%, #ddd 0%)';
+        scanButton.textContent = 'Starting...';
+        
+        const eventSource = new EventSource(`/scan?email_address=${encodeURIComponent(email)}&${scanParams}`);
+
+        eventSource.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+
+            if (data.error) {
+                updateStatus(statusDiv.id, data.error, true);
+                eventSource.close();
+                resetScanButton(scanButton);
+                return;
+            }
+
+            if (data.status === 'complete') {
+                updateStatus(statusDiv.id, data.message, false);
+                eventSource.close();
+                resetScanButton(scanButton);
+                // Final results rendering
+                renderResults(email, { links: data.links, scan_history: data.scan_history });
+                return;
+            }
+            
+            const percentage = (data.progress / data.total) * 100;
+            scanButton.style.background = `linear-gradient(to right, #4CAF50 ${percentage}%, #ddd ${percentage}%)`;
+            scanButton.textContent = `Scanning... (${data.progress}/${data.total})`;
+            updateStatus(statusDiv.id, `Processing: ${data.current_email_subject}`, false);
+        };
+
+        eventSource.onerror = function(err) {
+            console.error("EventSource failed:", err);
+            updateStatus(statusDiv.id, 'An error occurred during scanning.', true);
+            eventSource.close();
+            resetScanButton(scanButton);
+        };
+    }
+
+    function resetScanButton(scanButton) {
+        scanButton.disabled = false;
+        scanButton.style.background = ''; // Reset to CSS default
+        scanButton.textContent = 'Scan Now';
     }
 
     // ---- Edit Modal Functions ----
@@ -397,25 +463,43 @@
         
     function renderResults(email, data) {
         const safeEmailId = email.replace(/[@.]/g, '-');
-        const resultsDiv = document.getElementById(`results-${safeEmailId}`);
-        if (data.last_scan_time) {
-            const lastScanDate = new Date(data.last_scan_time);
-            updateStatus(`status-${safeEmailId}`, `Last scan: ${lastScanDate.toLocaleString()}`, false);
+        const resultsContainer = document.getElementById(`results-${safeEmailId}`);
+        const historyContainer = document.getElementById(`history-list-${safeEmailId}`);
+        
+        // Render Scan History
+        if (data.scan_history && data.scan_history.length > 0) {
+            historyContainer.innerHTML = `
+                <ul>
+                    ${data.scan_history.slice(-5).reverse().map(scan => `
+                        <li>
+                            <strong>${new Date(scan.scan_date).toLocaleString()}:</strong>
+                            ${scan.description} (${scan.new_links_found} new links found)
+                        </li>
+                    `).join('')}
+                </ul>
+            `;
+        } else {
+            historyContainer.innerHTML = '<p>No scans performed yet.</p>';
         }
 
-        const domains = Object.keys(data.links || {});
+        // Render Links
+        const links = data.links || {};
+        const unsubscribed = unsubscribedLogs[email] || {};
+        let html = '';
+
+        const domains = Object.keys(links);
         if (domains.length === 0) {
-            resultsDiv.innerHTML = '<p class="status-message">No unsubscribe links found. Run a scan to begin.</p>';
+            resultsContainer.innerHTML = '<p class="status-message">No unsubscribe links found. Run a scan to begin.</p>';
             return;
         }
 
-        resultsDiv.innerHTML = ''; // Clear previous results
+        resultsContainer.innerHTML = ''; // Clear previous results
         domains.sort().forEach(domain => {
             const domainBlock = document.createElement('div');
             domainBlock.className = 'domain-block';
             
-            const linksForDomain = data.links[domain];
-            const anyUnsubscribed = linksForDomain.some(link => unsubscribedLogs[email] && unsubscribedLogs[email][link.href]);
+            const linksForDomain = links[domain];
+            const anyUnsubscribed = linksForDomain.some(link => unsubscribed[link.href]);
 
             domainBlock.innerHTML = `
                 <h3>${domain} (${linksForDomain.length} links) ${anyUnsubscribed ? '<span class="clicked-mark">✅</span>' : ''}</h3>
@@ -433,7 +517,7 @@
                         <td>${linkData.date ? new Date(linkData.date).toLocaleDateString() : 'N/A'}</td>
                         <td>${linkData.subject || 'No Subject'}</td>
                         <td><a href="${linkData.href}" target="_blank" rel="noreferrer noopener">${linkData.text}</a></td>
-                        <td class="clicked-mark">${unsubscribedLogs[email] && unsubscribedLogs[email][linkData.href] ? '✅' : ''}</td>
+                        <td class="clicked-mark">${unsubscribed[linkData.href] ? '✅' : ''}</td>
                     `;
                     tr.querySelector('a').addEventListener('click', async () => {
                         await logUnsubscribe(email, linkData.href);
@@ -445,7 +529,7 @@
                     });
                     tbody.appendChild(tr);
             });
-            resultsDiv.appendChild(domainBlock);
+            resultsContainer.appendChild(domainBlock);
         });
     }
 

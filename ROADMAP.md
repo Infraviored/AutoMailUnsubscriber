@@ -1,80 +1,139 @@
-# Project Roadmap: From Prototype to Production
+# Project Roadmap: From Prototype to Production (v2)
 
-This document outlines the necessary steps to evolve the Auto Mail Unsubscriber from a functional prototype into a secure, user-friendly, and deployable web application.
-
----
-
-### Phase 1: Frontend Enhancements & User Experience
-
-The first priority is to improve the user-facing experience, making the application more interactive and professional.
-
-1.  **Implement Real-Time Scan Progress Bar**:
-    *   **Goal**: The user should see live feedback during an email scan directly in the browser, rather than just in the console.
-    *   **Technical Plan**:
-        *   **Backend**: Modify the `/scan` endpoint in `web_server.py` to become a streaming endpoint (using Flask's streaming capabilities with `yield`).
-        *   As the `email_client` scans emails one by one, the backend will `yield` progress updates as JSON objects (e.g., `{"progress": 10, "total": 100, "message": "Scanning email 10 of 100..."}`).
-        *   **Frontend**: Modify the `handleScan` function in `index.html`. Instead of a standard `fetch`, use the `fetch` API in a way that can read a response stream.
-        *   As progress events are received, update the "Scan Now" button's style and text. The button's background will fill horizontally based on the percentage, and its text will update to show "Scanning... (10/100)".
-
-2.  **Create a Professional Landing Page**:
-    *   **Goal**: New visitors should be greeted with an informative and trustworthy landing page before they log in or manage accounts.
-    *   **Technical Plan**:
-        *   Create a new route `/` in `web_server.py` that renders a new `landing.html` template.
-        *   The existing account management interface will be moved to a new route, like `/dashboard`.
-        *   The `landing.html` page will contain:
-            *   A clear explanation of what the application does.
-            *   Strong assurances about privacy and security (e.g., "We never store your emails").
-            *   A "Get Started" or "Login" button that directs users to the login/account page.
+This document provides a detailed, technical blueprint for evolving the Auto Mail Unsubscriber from a functional local prototype into a secure, user-friendly, and production-ready web application. It includes architectural decisions, implementation details, and deployment strategies.
 
 ---
 
-### Phase 2: Security & Privacy Overhaul
+### **Phase 1: Core Frontend Enhancements & User Experience**
 
-To be a public-facing application, we must prioritize user data security and privacy.
+The immediate priority is to elevate the user-facing experience from a simple tool to an interactive and trustworthy application.
 
-1.  **Remove Debug Email Storage**:
-    *   **Goal**: Stop saving the content of user emails to the local filesystem. This was a debug feature and is a major privacy risk.
-    *   **Technical Plan**:
-        *   In `app/email_client.py`, completely remove the code block that saves email HTML content to the `debug_emails` directory.
-        *   Remove the `DEBUG_EMAIL_DIR` configuration from `config.py`.
+#### **1.1: Implement Real-Time Streaming Progress Bar**
 
-2.  **Implement Data Persistence Options**:
-    *   **Goal**: Give users control over whether their unsubscribe links are stored persistently or are session-only.
-    *   **Technical Plan**:
-        *   **UI**: In the account settings/dashboard, add a toggle switch: "Keep my links saved for next time".
-        *   **Backend**:
-            *   When the user initiates a scan, the frontend will send the state of this toggle.
-            *   If persistence is disabled, all scan results (links, etc.) will be stored in the Flask `session` object, which is temporary and cookie-based.
-            *   If persistence is enabled, the results will be saved to the `scan_results.json` file as it is now, but associated with the user's primary account ID.
+*   **Objective**: Provide users with immediate, granular feedback during the email scanning process, enhancing user engagement and transparency. The "Scan Now" button will transform into a dynamic progress bar.
+*   **Technical Architecture**:
+    *   **Backend (Flask Streaming Response)**:
+        *   The `/scan` endpoint in `app/web_server.py` will be refactored to return a `Response` object with a generator function, effectively creating a server-sent event (SSE) stream.
+        *   The `Content-Type` header of the response will be set to `text/event-stream`.
+        *   The `email_client.py`'s `scan_emails` method will be modified to accept a callback function.
+        *   Inside the `/scan` endpoint, we will define a generator function. This function will call `scan_emails` and pass a lambda function as the callback.
+        *   After each email is processed, the callback will be invoked, and the generator will `yield` a formatted SSE message string (e.g., `data: {"progress": 10, "total": 100, "current_email_subject": "..."}\n\n`). This non-blocking approach ensures the frontend receives updates in real-time.
+    *   **Frontend (JavaScript EventSource API)**:
+        *   In `app/templates/index.html`, the `handleScan` JavaScript function will be rewritten. Instead of using `fetch` and `.then()`, it will instantiate an `EventSource` object, pointing to the `/scan` endpoint.
+        *   `eventSource.onmessage`: An event listener will be set up to handle incoming messages from the SSE stream. It will parse the `event.data` (which is a JSON string) into a JavaScript object.
+        *   **UI Manipulation**:
+            *   On scan start, the "Scan Now" button (`<button>`) will be disabled. A `<div>` element, styled to look like the button's progress bar, will be overlaid or used to change the button's background.
+            *   With each message from the `EventSource`, the UI will update:
+                *   The progress bar's width will be set dynamically (`style.width = data.progress / data.total * 100 + '%'`).
+                *   The text inside the button will be updated to show the progress (e.g., `Scanning... (${data.progress}/${data.total})`).
+        *   `eventSource.onerror` and `eventSource.onopen`: Handlers will be implemented to manage the connection lifecycle, gracefully handle errors, and close the connection using `eventSource.close()` when the scan is complete (signaled by a final message from the backend, e.g., `{"status": "complete"}`).
+
+#### **1.2: Create a Professional Landing Page & Application Structure**
+
+*   **Objective**: Establish a clear separation between the public-facing marketing/information page and the functional application dashboard. This is critical for user trust and for the Google verification process.
+*   **Technical Architecture**:
+    *   **Routing**:
+        *   A new `landing.html` template will be created. The `/` route in `web_server.py` will now render this template.
+        *   The existing application logic in `index.html` will be moved into a new `dashboard.html` template.
+        *   A new `/dashboard` route will be created, protected to ensure only logged-in users can access it (this protection will be implemented in Phase 3). Initially, it will be publicly accessible.
+    *   **Landing Page Content (`landing.html`)**:
+        *   This will be a static page with a professional design.
+        *   It will clearly articulate the app's value proposition.
+        *   It will feature a prominent "Get Started" or "Login with Google" button that links to the `/login` or `/dashboard` route.
+        *   **Crucially for verification**, it will include footer links to "Privacy Policy" and "Terms of Service" pages (to be created in Phase 2).
 
 ---
 
-### Phase 3: Multi-User Account System
+### **Phase 2: Security, Privacy & Google Verification Preparedness**
 
-The current system manages email accounts but doesn't have a concept of a "primary user" who owns those accounts. We need to implement a proper user authentication system.
+This phase focuses on hardening the application, ensuring user data is handled with extreme care, and preparing all necessary documentation for the Google OAuth verification process.
 
-1.  **Introduce User Registration & Login**:
-    *   **Goal**: Users should be able to create a primary account for the application itself using an email and password. This primary account will then contain their linked email accounts for scanning.
-    *   **Technical Plan**:
-        *   **Database**: Replace the `accounts.json` and `scan_results.json` files with a proper database (e.g., SQLite for simplicity, or PostgreSQL for production). We'll need a `users` table (id, primary_email, password_hash) and a `linked_accounts` table (id, user_id, email_address, provider, credentials).
-        *   **Authentication**:
-            *   Create `/register` and `/login` endpoints.
-            *   When a user registers, hash their password using a strong library like `Werkzeug.security`. **Never store plain text passwords.**
-            *   Use Flask-Login or a similar session management library to handle user login state.
-        *   **Account Linking**: Once logged in, the user can add scanning accounts (Gmail, IMAP). These will be stored in the `linked_accounts` table, associated with their primary `user_id`. The OAuth flow will remain largely the same, but the credentials will be stored in the database instead of a JSON file.
+#### **2.1: Fortify Security and Privacy Policies**
+
+*   **Objective**: Eliminate security risks from debug features and implement transparent data handling practices.
+*   **Technical Implementation**:
+    *   **Remove Debug File I/O**: The code block in `app/email_client.py` responsible for writing email contents to the `debug_emails` directory will be completely removed. The `DEBUG_EMAIL_DIR` variable in `config.py` will also be deleted. This is a non-negotiable step for production.
+    *   **Create `privacy_policy.html` and `terms_of_service.html`**:
+        *   New templates will be created in the `templates` directory.
+        *   New routes (`/privacy` and `/terms`) will be added to `web_server.py` to serve these pages.
+        *   **Privacy Policy Content**: This document will be written in clear, simple language and will explicitly state:
+            *   Confirmation that the app uses the Google Gmail API to read email data.
+            *   The exact scope being requested (`gmail.readonly`).
+            *   The reason for data access: "to automatically identify and extract hypertext links that are associated with email unsubscriptions."
+            *   A firm declaration that email body content is processed ephemerally and **never stored** on the server.
+            *   A list of the data that **is** stored (e.g., the extracted URL, sender's domain, date of email) and for what purpose (to display to the user).
+            *   Details on how a user can permanently delete their account and all associated data.
+
+#### **2.2: Prepare for Google OAuth Verification**
+
+*   **Objective**: Systematically prepare all assets and documentation required by Google's Trust & Safety team to ensure a smooth verification process for the `gmail.readonly` scope.
+*   **Checklist & Plan**:
+    *   **Verified Domain Ownership**: The production domain must be verified through the Google Search Console. The Google account used for verification must be an owner of the Google Cloud project.
+    *   **OAuth Consent Screen Configuration**:
+        *   The Application Name, Logo, and Support Email must be professional and accurately represent the application.
+        *   Links to the newly created Privacy Policy and Terms of Service homepages must be added.
+    *   **Demonstration Video**: A short (1-2 minute) screen recording will be prepared. It must clearly show:
+        1.  The user starting on the application's homepage (`https://your-domain.com`).
+        2.  The entire OAuth 2.0 sign-in flow.
+        3.  The OAuth consent screen, clearly showing the correct `client_id` in the URL.
+        4.  The core functionality of the app after login (e.g., initiating a scan and seeing results appear).
+    *   **Written Justification**: A concise justification for why the sensitive `gmail.readonly` scope is necessary for the app's core functionality will be prepared.
 
 ---
 
-### Phase 4: Deployment
+### **Phase 3: Multi-User Architecture & Data Persistence**
 
-Prepare the application to be deployed to a public domain.
+This phase transitions the application from a single-user tool to a true multi-tenant SaaS application.
 
-1.  **Configuration for Production**:
-    *   Use a production-ready WSGI server (like Gunicorn or uWSGI) instead of the Flask development server.
-    *   Update `config.py` to use environment variables for all sensitive information (e.g., `SECRET_KEY`, database URI).
-    *   Disable debug mode in Flask.
+#### **3.1: Database Integration**
 
-2.  **Domain and HTTPS**:
-    *   Acquire a domain name.
-    *   Configure the production server to use HTTPS with an SSL certificate (e.g., from Let's Encrypt).
-    *   Update the Google OAuth redirect URI in the Cloud Console to use the new `https://your-domain.com/oauth2callback` URI. 
+*   **Objective**: Replace the fragile JSON file storage with a robust, scalable relational database.
+*   **Technical Implementation**:
+    *   **Technology Choice**: We will use `Flask-SQLAlchemy` as the ORM for seamless integration. The initial database will be SQLite for ease of development, with a clear path to switch to PostgreSQL for production.
+    *   **Data Models (`models.py`)**: A new `app/models.py` file will be created with the following SQLAlchemy models:
+        *   `User(db.Model)`:
+            *   `id` (Integer, Primary Key)
+            *   `primary_email` (String, Unique, Not Null)
+            *   `password_hash` (String, Not Null)
+            *   `linked_accounts` (Relationship to `LinkedAccount`)
+        *   `LinkedAccount(db.Model)`:
+            *   `id` (Integer, Primary Key)
+            *   `user_id` (Integer, Foreign Key to `User.id`)
+            *   `email_address` (String, Not Null)
+            *   `provider` (String, e.g., 'gmail', 'other')
+            *   `credentials_json` (Text, Nullable, Encrypted): To store OAuth tokens or IMAP passwords.
+        *   `UnsubscribeLink(db.Model)`:
+            *   `id` (Integer, Primary Key)
+            *   `linked_account_id` (Integer, Foreign Key to `LinkedAccount.id`)
+            *   `sender_domain` (String)
+            *   `unsubscribe_url` (String, Unique)
+            *   `email_subject` (String)
+            *   `email_date` (DateTime)
+    *   **Credential Encryption**: All sensitive credentials in `LinkedAccount.credentials_json` will be encrypted at rest using the `cryptography` library before being stored in the database.
+
+#### **3.2: User Authentication System**
+
+*   **Objective**: Implement a secure registration, login, and session management system.
+*   **Technical Implementation**:
+    *   **Library**: `Flask-Login` will be integrated to manage user sessions.
+    *   **Password Hashing**: The `werkzeug.security` library will be used to generate secure password hashes (`generate_password_hash`) and verify them (`check_password_hash`).
+    *   **Routes**:
+        *   `/register` (GET, POST): A form for new users. On POST, it will validate the data, hash the password, and create a new `User` record.
+        *   `/login` (GET, POST): A form to authenticate users. On POST, it will check credentials and use `login_user()` from Flask-Login.
+        *   `/logout`: Will clear the session using `logout_user()`.
+    *   **Route Protection**: The `@login_required` decorator from Flask-Login will be applied to all routes that require an authenticated user (e.g., `/dashboard`, `/scan`).
+
+---
+
+### **Phase 4: Deployment & Production Readiness**
+
+This final phase covers the steps to deploy the application to a live server.
+
+*   **Objective**: Deploy the application on a public domain, configured for security, reliability, and performance.
+*   **Deployment Plan**:
+    *   **WSGI Server**: Use **Gunicorn** as the production WSGI server to run the Flask application. It will be configured with multiple worker processes.
+    *   **Reverse Proxy**: Use **Nginx** as a reverse proxy in front of Gunicorn. Nginx will handle incoming HTTP/HTTPS requests, serve static files directly (for performance), and forward dynamic requests to the Gunicorn workers.
+    *   **HTTPS**: **Certbot** will be used to obtain and automatically renew a free SSL/TLS certificate from Let's Encrypt, enabling HTTPS for the domain.
+    *   **Environment Variables**: All configuration variables (`SECRET_KEY`, `DATABASE_URI`, OAuth client secrets for production) will be managed through environment variables, not hardcoded in `config.py`.
+    *   **Database**: For production, the application will be configured to connect to a managed PostgreSQL database instance.
+    *   **Redirect URI Update**: The final step after deployment will be to go back to the Google Cloud Console and add the new, final production URL (`https-your-domain-com/oauth2callback`) to the list of authorized redirect URIs. 

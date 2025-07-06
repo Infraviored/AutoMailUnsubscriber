@@ -1,8 +1,9 @@
-from flask import Flask, render_template, jsonify, request, send_from_directory, redirect, url_for, session
+from flask import Flask, render_template, jsonify, request, send_from_directory, redirect, url_for, session, Response
 from app.email_client import get_email_client
 import json
 import os
 import datetime
+import logging
 
 # --- Google OAuth Imports ---
 from google.oauth2.credentials import Credentials
@@ -290,57 +291,123 @@ def log_unsubscribe():
 def index():
     return render_template('index.html')
 
-@app.route('/scan', methods=['POST'])
+@app.route('/scan')
 def scan():
-    data = request.get_json() or {}
-    email = data.get('email_address')
-    if not email:
-        return jsonify({"status": "ERROR", "message": "Email address is required for scan."}), 400
+    email = request.args.get('email_address')
+    num_emails_str = request.args.get('num_emails', '50')
+    since_date = request.args.get('since_date')
 
-    accounts = load_data(ACCOUNTS_FILE)
-    account_info = accounts.get(email)
-    if not account_info:
-        return jsonify({"status": "ERROR", "message": "Account not configured."}), 400
+    if not email:
+        return Response(json.dumps({'error': 'Email address is required.'}), mimetype='application/json', status=400)
 
     try:
-        num_emails = int(data.get('num_emails', 50))
+        num_emails = int(num_emails_str)
     except (ValueError, TypeError):
         num_emails = 50
+        
+    def generate_scan_progress():
+        accounts = load_data(ACCOUNTS_FILE)
+        account_info = accounts.get(email)
+        
+        if not account_info:
+            yield f"data: {json.dumps({'error': 'Account not configured.'})}\n\n"
+            return
 
-    password_or_creds = None
-    if account_info.get('provider') == 'gmail':
-        password_or_creds = account_info.get('credentials')
-    else:
-        password_or_creds = account_info.get('password')
+        password_or_creds = account_info.get('credentials') if account_info.get('provider') == 'gmail' else account_info.get('password')
 
-    try:
-        client = get_email_client(
-            account_info['provider'],
-            email,
-            password_or_creds,
-            account_info.get('imap_server')
-        )
-        status, message = client.connect()
-        if status != "OK":
-            return jsonify({"status": "ERROR", "message": f"Connection failed: {message}"}), 500
+        try:
+            client = get_email_client(
+                account_info['provider'],
+                email,
+                password_or_creds,
+                account_info.get('imap_server')
+            )
+            
+            status, message = client.connect()
+            if status != "OK":
+                yield f"data: {json.dumps({'error': f'Connection failed: {message}'})}\n\n"
+                return
 
-        scan_results_data = load_data(RESULTS_FILE)
-        last_uid = scan_results_data.get(email, {}).get('last_uid')
+            scan_results_data = load_data(RESULTS_FILE)
+            last_uid = scan_results_data.get(email, {}).get('last_uid')
+            
+            # The client's scan_emails method is now a generator
+            for item in client.scan_emails(num_emails, last_uid, since_date):
+                # Ensure item is a dictionary before processing
+                if not isinstance(item, dict):
+                    continue
 
-        status, message, links, new_last_uid = client.scan_emails(num_emails, last_uid)
-        client.disconnect()
+                if item.get('status') == 'progress':
+                    # This is a progress update
+                    yield f"data: {json.dumps(item)}\n\n"
+                elif item.get('status') == 'complete':
+                    # This is the final result
+                    links = item.get('links')
+                    if not isinstance(links, dict):
+                        links = {} # Ensure links is a dict
+                    
+                    new_last_uid = item.get('last_uid')
 
-        if status == 'OK':
-            scan_results_data[email] = {
-                "last_scan_time": datetime.datetime.utcnow().isoformat(),
-                "last_uid": new_last_uid.decode('utf-8') if new_last_uid else last_uid,
-                "links": links
-            }
-            save_data(RESULTS_FILE, scan_results_data)
+                    # --- Merge with existing results instead of overwriting ---
+                    existing_results = scan_results_data.get(email, {})
+                    existing_links = existing_results.get('links', {})
+                    scan_history = existing_results.get('scan_history', [])
 
-        return jsonify({"status": status, "message": message, "links": links})
-    except Exception as e:
-        return jsonify({"status": "ERROR", "message": f"An unexpected error occurred during scan: {e}"}), 500
+                    for domain, new_links_list in links.items():
+                        if domain not in existing_links:
+                            existing_links[domain] = []
+                        
+                        # Use a set for efficient lookup of existing hrefs
+                        domain_hrefs = {link['href'] for link in existing_links[domain]}
+                        
+                        for link_data in new_links_list:
+                            if link_data['href'] not in domain_hrefs:
+                                existing_links[domain].append(link_data)
+                                domain_hrefs.add(link_data['href'])
+                    
+                    # --- Update Scan History ---
+                    scan_description = f"{num_emails} recent emails" if not since_date else f"emails since {since_date}"
+                    
+                    # Find date range of the new links
+                    all_dates = [datetime.datetime.fromisoformat(link['date']) for domain_links in links.values() for link in domain_links if link.get('date')]
+                    date_range_str = ""
+                    if all_dates:
+                        min_date = min(all_dates).strftime('%Y-%m-%d')
+                        max_date = max(all_dates).strftime('%Y-%m-%d')
+                        date_range_str = f"covering emails from {min_date} to {max_date}"
+
+                    scan_history.append({
+                        "scan_date": datetime.datetime.utcnow().isoformat(),
+                        "scan_type": "date" if since_date else "number",
+                        "scan_parameter": since_date or num_emails,
+                        "description": f"Scanned {scan_description}",
+                        "date_range": date_range_str,
+                        "new_links_found": sum(len(v) for v in links.values())
+                    })
+                    
+                    scan_results_data[email] = {
+                        "scan_history": scan_history,
+                        "last_uid": new_last_uid if isinstance(new_last_uid, str) else (new_last_uid.decode('utf-8') if new_last_uid else last_uid),
+                        "links": existing_links # Save the merged links
+                    }
+                    save_data(RESULTS_FILE, scan_results_data)
+                    
+                    final_data = {
+                        "status": "complete", 
+                        "message": "Scan complete.", 
+                        "links": existing_links,
+                        "scan_history": scan_history
+                    }
+                    yield f"data: {json.dumps(final_data)}\n\n"
+            
+            client.disconnect()
+
+        except Exception as e:
+            # It's important to log the full exception for debugging
+            logging.error(f"An exception occurred during scan stream: {e}", exc_info=True)
+            yield f"data: {json.dumps({'error': f'An unexpected server error occurred: {e}'})}\n\n"
+
+    return Response(generate_scan_progress(), mimetype='text/event-stream')
 
 def run():
     # Clean up old files if they exist

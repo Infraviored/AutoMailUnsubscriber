@@ -10,6 +10,7 @@ import os
 from abc import ABC, abstractmethod
 from typing import Dict, Any
 import base64
+import datetime
 
 # --- Google OAuth Imports ---
 from google.oauth2.credentials import Credentials
@@ -39,27 +40,39 @@ class EmailProvider(ABC):
             self.mail.logout()
             logging.info(f"Disconnected from {self.email_address}")
 
-    def scan_emails(self, num_emails_to_scan: int = 50, since_uid: str | None = None) -> tuple[str, str, Dict, bytes | None]:
+    def scan_emails(self, num_emails_to_scan: int = 50, since_uid: str | None = None, since_date: str | None = None):
         # This implementation can be shared across all IMAP-based providers
         if not self.mail:
             logging.error("Scan attempt failed: Not connected to the email server.")
-            return "ERROR", "Not connected to the email server.", {}, None
+            # In a generator, we can't return, so we yield an error and stop.
+            yield {"status": "error", "message": "Not connected to the email server."}
+            return
 
         self.mail.select("inbox")
         logging.info("Selected INBOX.")
         
         search_criteria = "ALL"
-        if since_uid:
+        if since_date:
+            # Format date for IMAP: DD-Mon-YYYY
+            try:
+                search_date = datetime.datetime.strptime(since_date, "%Y-%m-%d").strftime("%d-%b-%Y")
+                search_criteria = f'(SINCE "{search_date}")'
+                logging.info(f"Searching for emails since {search_date}")
+            except ValueError:
+                logging.error(f"Invalid date format for since_date: {since_date}. Use YYYY-MM-DD.")
+                # Fallback to default behavior
+        elif since_uid:
             search_criteria = f"UID {since_uid}:*"
             logging.info(f"Searching for emails with UID greater than {since_uid}")
         else:
-            logging.info("No previous UID found, scanning all emails.")
+            logging.info("No previous UID or date found, scanning all emails.")
 
         # We need to fetch UIDs, not message sequence numbers
         status, messages = self.mail.uid('search', None, search_criteria) # type: ignore
         if status != 'OK' or not messages or not messages[0]:
             logging.warning("Failed to retrieve emails or no emails found for the new criteria.")
-            return "ERROR", "Failed to retrieve emails or no emails found.", {}, None
+            yield {"status": "complete", "links": {}, "last_uid": since_uid}
+            return
 
         message_ids = messages[0].split()
         if not since_uid:
@@ -74,7 +87,8 @@ class EmailProvider(ABC):
         if latest_message_ids:
             last_uid = latest_message_ids[0] # The newest one
 
-        for mail_id in tqdm(latest_message_ids, desc="Scanning emails"):
+        total_emails = len(latest_message_ids)
+        for i, mail_id in enumerate(latest_message_ids):
             # Fetch using UID
             status, msg_data = self.mail.uid('fetch', mail_id, "(RFC822)")
             if status != "OK":
@@ -158,6 +172,13 @@ class EmailProvider(ABC):
                     except Exception as e:
                         logging.error(f"Failed to save email HTML: {e}")
 
+                yield {
+                    "status": "progress",
+                    "progress": i + 1,
+                    "total": total_emails,
+                    "current_email_subject": subject
+                }
+
                 links = find_unsubscribe_links(html_content)
                 if links:
                     logging.info(f"Found {len(links)} unsubscribe links in email '{subject}'.")
@@ -175,8 +196,7 @@ class EmailProvider(ABC):
                             link_data['date'] = email_date
                             all_unsubscribe_links[sender_domain].append(link_data)
 
-        logging.info("Email scan complete.")
-        return "OK", "Scan complete.", all_unsubscribe_links, last_uid
+        yield {"status": "complete", "links": all_unsubscribe_links, "last_uid": last_uid}
 
 
 class IMAPProvider(EmailProvider):
@@ -229,29 +249,38 @@ class GmailProvider(EmailProvider):
         self.mail = None
         logging.info("Disconnected from Gmail (no action needed).")
 
-    def scan_emails(self, num_emails_to_scan: int = 50, since_uid: str | None = None) -> tuple[str, str, Dict, bytes | None]:
+    def scan_emails(self, num_emails_to_scan: int = 50, since_uid: str | None = None, since_date: str | None = None):
         if not self.mail:
             logging.error("Scan attempt failed: Not connected to the email server.")
-            return "ERROR", "Not connected to the email server.", {}, None
+            yield {"status": "error", "message": "Not connected to the email server."}
+            return
         
+        gmail_query = ""
+        if since_date:
+            try:
+                # Format for Gmail API: YYYY/MM/DD
+                search_date = datetime.datetime.strptime(since_date, "%Y-%m-%d").strftime("%Y/%m/%d")
+                gmail_query = f"after:{search_date}"
+                logging.info(f"Searching Gmail for emails after {search_date}")
+            except ValueError:
+                logging.error(f"Invalid date format for since_date: {since_date}. Use YYYY-MM-DD.")
+
         try:
-            # The Gmail API does not use IMAP UIDs in the same way. 
-            # We'll list messages. The API paginates, so we'll fetch one page.
-            # `since_uid` logic will need to be adapted. For now, we fetch the latest.
-            
-            response = self.mail.users().messages().list(userId='me', maxResults=num_emails_to_scan).execute()
+            response = self.mail.users().messages().list(userId='me', maxResults=num_emails_to_scan, q=gmail_query).execute()
             messages = response.get('messages', [])
             
             all_unsubscribe_links = {}
-            last_uid = None # In Gmail API, this would be message ID.
+            last_uid = None
 
             if not messages:
                 logging.info("No new messages found in Gmail.")
-                return "OK", "Scan complete. No new messages.", {}, None
+                yield {"status": "complete", "links": {}, "last_uid": None}
+                return
 
             last_uid = messages[0]['id'].encode('utf-8')
+            total_emails = len(messages)
 
-            for message_info in tqdm(messages, desc="Scanning Gmail emails"):
+            for i, message_info in enumerate(messages):
                 msg_id = message_info['id']
                 msg = self.mail.users().messages().get(userId='me', id=msg_id, format='full').execute()
 
@@ -287,7 +316,12 @@ class GmailProvider(EmailProvider):
                         html_content = base64.urlsafe_b64decode(data).decode('utf-8')
 
                 if html_content:
-                    # (The rest of the logic to find links is similar to the IMAP provider)
+                    yield {
+                        "status": "progress",
+                        "progress": i + 1,
+                        "total": total_emails,
+                        "current_email_subject": subject
+                    }
                     links = find_unsubscribe_links(html_content)
                     if links:
                         sender_domain = ""
@@ -304,14 +338,14 @@ class GmailProvider(EmailProvider):
                                 link_data['date'] = email_date
                                 all_unsubscribe_links[sender_domain].append(link_data)
 
-            return "OK", "Gmail scan complete.", all_unsubscribe_links, last_uid
+            yield {"status": "complete", "links": all_unsubscribe_links, "last_uid": last_uid}
 
         except HttpError as error:
             logging.error(f"An API error occurred during Gmail scan: {error}")
-            return "ERROR", f"API Error: {error}", {}, None
+            yield {"status": "error", "message": f"API Error: {error}"}
         except Exception as e:
             logging.error(f"An unexpected error occurred during Gmail scan: {e}")
-            return "ERROR", f"An unexpected error occurred: {e}", {}, None
+            yield {"status": "error", "message": f"An unexpected error occurred: {e}"}
 
 class OutlookProvider(EmailProvider):
     def connect(self) -> tuple[str, str]:
