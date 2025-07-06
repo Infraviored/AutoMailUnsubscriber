@@ -1,10 +1,12 @@
 Flask
-beautifulsoup4
 python-dotenv
+beautifulsoup4
 tqdm
-google-api-python-client
-google-auth-oauthlib
 requests
 lxml
+google-api-python-client
+google-auth-oauthlib
 google-auth-httplib2
+Flask-SQLAlchemy
+Flask-Login
 

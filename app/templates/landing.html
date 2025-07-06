@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>unsubmy.email - Reclaim Your Inbox</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .hero {
+            text-align: center;
+            padding: 80px 20px;
+        }
+        .hero h1 {
+            font-size: 3rem;
+            margin-bottom: 20px;
+        }
+        .hero p {
+            font-size: 1.25rem;
+            color: #6c757d;
+            margin-bottom: 40px;
+        }
+        .cta-button {
+            display: inline-block;
+            padding: 15px 30px;
+            font-size: 1.2rem;
+            color: #fff;
+            background-color: #007bff;
+            border: none;
+            border-radius: 5px;
+            text-decoration: none;
+            transition: background-color 0.3s ease;
+        }
+        .cta-button:hover {
+            background-color: #0056b3;
+        }
+        .features {
+            padding: 60px 20px;
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+        }
+        .feature-item {
+            max-width: 300px;
+            text-align: center;
+        }
+        .feature-item h3 {
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="hero">
+            <h1>Reclaim Your Inbox.</h1>
+            <p>Tired of endless promotional emails? unsubmy.email scans your inbox for newsletters and subscriptions, gathering all unsubscribe links into one simple dashboard.</p>
+            <a href="{{ url_for('login') }}" class="cta-button">Get Started for Free</a>
+        </div>
+
+        <div class="features">
+            <div class="feature-item">
+                <h3>Secure & Private</h3>
+                <p>Connect your accounts with confidence. We use secure OAuth for Gmail and never store your passwords or email content. Your privacy is our top priority.</p>
+            </div>
+            <div class="feature-item">
+                <h3>All in One Place</h3>
+                <p>Manage unsubscribe links from multiple email accounts in a single, unified interface. No more hunting through individual emails.</p>
+            </div>
+            <div class="feature-item">
+                <h3>Smart & Efficient</h3>
+                <p>Our tool intelligently identifies subscription emails and alerts you if a sender ignores your unsubscribe request, helping you truly clean up your inbox.</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html> 
