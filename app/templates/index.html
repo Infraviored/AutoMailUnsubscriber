@@ -192,6 +192,14 @@
                 <h4>Scan History</h4>
                 <div id="history-list-${safeEmailId}"></div>
             </div>
+
+            <hr class="separator">
+
+            <div class="results-header">
+                <h2>Unsubscription List</h2>
+                <div class="results-summary" id="summary-${safeEmailId}"></div>
+            </div>
+
             <div id="results-${safeEmailId}" class="results-container"></div>
         `;
         tabContentsContainer.appendChild(content);
@@ -465,7 +473,11 @@
         const safeEmailId = email.replace(/[@.]/g, '-');
         const resultsContainer = document.getElementById(`results-${safeEmailId}`);
         const historyContainer = document.getElementById(`history-list-${safeEmailId}`);
+        const summaryContainer = document.getElementById(`summary-${safeEmailId}`);
+        const unsubscribed = unsubscribedLogs[email] || {};
         
+        const lastScan = (data.scan_history && data.scan_history.length > 0) ? data.scan_history[data.scan_history.length - 1] : null;
+
         // Render Scan History
         if (data.scan_history && data.scan_history.length > 0) {
             historyContainer.innerHTML = `
@@ -473,7 +485,7 @@
                     ${data.scan_history.slice(-5).reverse().map(scan => `
                         <li>
                             <strong>${new Date(scan.scan_date).toLocaleString()}:</strong>
-                            ${scan.description} (${scan.new_links_found} new links found)
+                            ${scan.description} ${scan.date_range} (${scan.new_links_found} new links found)
                         </li>
                     `).join('')}
                 </ul>
@@ -482,12 +494,34 @@
             historyContainer.innerHTML = '<p>No scans performed yet.</p>';
         }
 
-        // Render Links
+        // Render Links & Summary
         const links = data.links || {};
-        const unsubscribed = unsubscribedLogs[email] || {};
-        let html = '';
-
+        const allLinks = Object.values(links).flat();
+        const totalLinks = allLinks.length;
+        
+        let unsubscribedProviders = 0;
         const domains = Object.keys(links);
+        domains.forEach(domain => {
+            if (links[domain].some(link => unsubscribed[link.href])) {
+                unsubscribedProviders++;
+            }
+        });
+
+        if (totalLinks > 0) {
+            const allDates = allLinks.map(l => new Date(l.date)).filter(d => !isNaN(d));
+            const minDate = new Date(Math.min.apply(null, allDates));
+            const maxDate = new Date(Math.max.apply(null, allDates));
+            summaryContainer.innerHTML = `
+                <p>
+                    Covering <strong>${totalLinks}</strong> links from <strong>${minDate.toLocaleDateString()}</strong> to <strong>${maxDate.toLocaleDateString()}</strong>.
+                    You have unsubscribed from <strong>${unsubscribedProviders} of ${domains.length}</strong> senders.
+                    Last updated: <strong>${lastScan ? new Date(lastScan.scan_date).toLocaleString() : 'N/A'}</strong>.
+                </p>
+            `;
+        } else {
+            summaryContainer.innerHTML = '';
+        }
+
         if (domains.length === 0) {
             resultsContainer.innerHTML = '<p class="status-message">No unsubscribe links found. Run a scan to begin.</p>';
             return;
@@ -499,33 +533,72 @@
             domainBlock.className = 'domain-block';
             
             const linksForDomain = links[domain];
-            const anyUnsubscribed = linksForDomain.some(link => unsubscribed[link.href]);
+            
+            // Find the latest unsubscribe date for this domain
+            let latestUnsubscribeDate = null;
+            linksForDomain.forEach(link => {
+                if (unsubscribed[link.href]) {
+                    const unsubDate = new Date(unsubscribed[link.href].unsubscribed_date);
+                    if (!latestUnsubscribeDate || unsubDate > latestUnsubscribeDate) {
+                        latestUnsubscribeDate = unsubDate;
+                    }
+                }
+            });
+
+            // Determine domain status icon
+            let statusIcon = '<span class="status-icon unsub-none">☐</span>'; // Not unsubscribed
+            let statusText = '';
+            if (latestUnsubscribeDate) {
+                const hasNewerMail = linksForDomain.some(link => !unsubscribed[link.href] && new Date(link.date) > latestUnsubscribeDate);
+                if (hasNewerMail) {
+                    statusIcon = '<span class="status-icon unsub-failed" title="New email received after unsubscribing.">❗️</span>'; // Failed
+                } else {
+                    statusIcon = '<span class="status-icon unsub-ok">✅</span>'; // OK
+                }
+                statusText = ` (Last unsubscribed: ${latestUnsubscribeDate.toLocaleDateString()})`;
+            }
 
             domainBlock.innerHTML = `
-                <h3>${domain} (${linksForDomain.length} links) ${anyUnsubscribed ? '<span class="clicked-mark">✅</span>' : ''}</h3>
+                <h3 class="domain-title">${statusIcon} ${domain} (${linksForDomain.length} links)${statusText}</h3>
                 <table>
                     <thead><tr><th>Received</th><th>Subject</th><th>Link Text</th><th>Clicked</th></tr></thead>
-                    <tbody></tbody>
-                </table>
-            `;
+                    <tbody>
+                    </tbody>
+                </table>`;
+
             const tbody = domainBlock.querySelector('tbody');
             linksForDomain
-                .sort((a,b) => new Date(b.date) - new Date(a.date))
-                .forEach(linkData => {
+                .sort((a, b) => new Date(b.date) - new Date(a.date)) // Sort by most recent email first
+                 .forEach(linkData => {
                     const tr = document.createElement('tr');
+                    const isUnsubscribed = unsubscribed[linkData.href];
+                    const emailDate = new Date(linkData.date);
+                    
+                    let warningIcon = '';
+                    if (latestUnsubscribeDate && !isUnsubscribed && emailDate > latestUnsubscribeDate) {
+                        warningIcon = '<span class="warning-icon" title="A new email was received after you unsubscribed from this sender.">❗️</span>';
+                    }
+
                     tr.innerHTML = `
-                        <td>${linkData.date ? new Date(linkData.date).toLocaleDateString() : 'N/A'}</td>
-                        <td>${linkData.subject || 'No Subject'}</td>
-                        <td><a href="${linkData.href}" target="_blank" rel="noreferrer noopener">${linkData.text}</a></td>
-                        <td class="clicked-mark">${unsubscribed[linkData.href] ? '✅' : ''}</td>
-                    `;
+                        <td>${emailDate.toLocaleDateString()} ${warningIcon}</td>
+                         <td>${linkData.subject || 'No Subject'}</td>
+                         <td><a href="${linkData.href}" target="_blank" rel="noreferrer noopener">${linkData.text}</a></td>
+                         <td class="clicked-mark">
+                             ${isUnsubscribed ? '✅' : ''}
+                         </td>
+                     `;
                     tr.querySelector('a').addEventListener('click', async () => {
-                        await logUnsubscribe(email, linkData.href);
-                        tr.querySelector('.clicked-mark').textContent = '✅';
-                        const h3 = domainBlock.querySelector('h3');
-                        if (!h3.querySelector('.clicked-mark')) {
-                           h3.innerHTML += ' <span class="clicked-mark">✅</span>';
-                        }
+                        // Mark as clicked immediately for better UX
+                        tr.querySelector('.clicked-mark').innerHTML = '✅';
+                        unsubscribed[linkData.href] = { unsubscribed_date: new Date().toISOString() }; // Update local state
+                        
+                        await fetch('/api/unsubscribe', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ email_address: email, href: linkData.href })
+                        });
+                        // Re-render to update the header status
+                        renderResults(email, data);
                     });
                     tbody.appendChild(tr);
             });

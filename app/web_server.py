@@ -282,7 +282,10 @@ def log_unsubscribe():
     logs = load_data(UNSUBSCRIBED_LOG_FILE)
     if email not in logs:
         logs[email] = {}
-    logs[email][link_href] = datetime.datetime.utcnow().isoformat()
+    
+    logs[email][link_href] = {
+        "unsubscribed_date": datetime.datetime.utcnow().isoformat()
+    }
     save_data(UNSUBSCRIBED_LOG_FILE, logs)
     
     return jsonify({"status": "OK"})
