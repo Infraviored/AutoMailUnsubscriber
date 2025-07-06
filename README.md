@@ -1,60 +1,54 @@
-# AutoMailUnsubscriber
+# Auto Mail Unsubscriber
 
-Tired of sifting through countless emails just to find those elusive unsubscribe links? Unsubscribe Helper is here to streamline the process, making your digital decluttering a breeze.
+A simple tool to scan your email inbox and find unsubscribe links from newsletters and other subscription-based emails.
 
-## How It Works
+## Features
 
-Unsubscribe Helper dives into your email inbox, using a keen eye to scan for potential trigger words like "unsubscribe" or "newsletter." It's not just looking at random; it hones in on the closest links within each email, usually right where the unsubscribe link lurks.
+- Scans a specified number of recent emails.
+- Uses an extensive list of English and German keywords to identify unsubscribe links.
+- Groups found links by sender domain.
+- Provides a simple web interface to start the scan and view the results.
 
-But it doesn't stop there. Unsubscribe Helper elegantly organizes these links by domain, allowing you to swiftly review and decide which subscriptions to cut from your digital life. It's like having a personal assistant dedicated to clearing your inbox clutter.
+## Setup and Usage
 
-### Features
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/your-username/AutoMailUnsubscriber.git
+    cd AutoMailUnsubscriber
+    ```
 
-- **Smart Detection**: Iterates through your emails, focusing on ones with potential trigger words indicating subscription information.
-- **Link Extraction**: Finds and extracts the nearest links within the email body, likely pointing you directly to unsubscribe pages.
-- **Organized Overview**: Compiles the links in an easy-to-navigate list, sorted by domain, for efficient review and action.
-- **Safety First**: Your emails are only processed in memory (RAM), never stored or logged, ensuring your privacy and security.
-- **Simple Offline Review**: Generates a single, offline HTML file containing all found links. You decide when and which links to follow, directly from your browser.
+2.  **Install dependencies:**
+    It's recommended to use a virtual environment.
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+    pip install -r requirements.txt
+    ```
 
-## Is This Safe?
+3.  **Configure your email credentials:**
+    Create a file named `.env` in the project root by copying the template:
+    ```bash
+    cp .env.template .env
+    ```
+    Now, open the `.env` file and add your email account details. Do not add quotes around the values.
+    ```
+    EMAIL_ADDRESS=your_email@example.com
+    EMAIL_PASSWORD=your_password
+    IMAP_SERVER=imap.example.com
+    ```
+    For example, for GMX, `IMAP_SERVER` would be `imap.gmx.com`.
 
-Absolutely. Your email content is processed in memory and never written to disk, except for the final HTML file containing unsubscribe links - and even that's done locally on your computer. The program itself doesn't interact with any servers (aside from your email provider to fetch emails), nor does it store any of your credentials or email contents beyond its runtime. You're in control every step of the way.
+4.  **Run the application:**
+    ```bash
+    python run.py
+    ```
 
-## Getting Started
+5.  **Open your browser:**
+    Navigate to `http://127.0.0.1:5000` to access the web interface. Enter the number of emails you want to scan and click "Scan Emails".
 
-Getting started with Unsubscribe Helper is straightforward. Follow these steps to declutter your inbox:
+## How it works
 
-### Setup
+The script connects to your email account via IMAP, fetches the most recent emails, and parses the HTML content to find links that are likely for unsubscribing. It looks for keywords like "unsubscribe", "abbestellen", "opt-out", etc., in the text of and around the links.
 
-1. **Clone the Repository**: Begin by cloning this repository to your local machine.
-   ```
-   git clone https://github.com/Infraviored/AutoMailUnsubscriber.git
-   ```
-2. **Install Dependencies**: Navigate into the cloned directory and install the required Python packages.
-   ```
-   pip install beautifulsoup4 tqdm
-   ```
-3. **Launch the Program**: Start the program by running the Python script.
-   ```
-   python AutoMailUnsubscriber.py
-   ```
-
-### Processing Your Emails
-
-1. **Email Selection**: Upon launch, the program will ask you to select which email accounts to process. If it's your first time, you'll have the option to add a new email account.
-2. **Number of Emails**: For each selected account, you will then enter the number of recent emails you wish to scan for unsubscribe links.
-3. **Add More Accounts**: After processing, you'll have the option to add more email accounts or to proceed with the current selections.
-
-### Reviewing Unsubscribe Links
-
-1. **Open the HTML File**: Once processing is complete, the program generates an HTML file (`unsubscribe_urls_<email>.html`) for each processed email account. To see a live example of the generated HTML output, [click here](https://infraviored.github.io/AutoMailUnsubscriber/demo_unsub.html).
-2. **Review Links**: Open the generated HTML file in your preferred web browser. You'll see a list of unsubscribe links organized by domain, along with the distance metric indicating how closely related the link is to the unsubscribe trigger words.
-3. **Take Action**: Click through the links to visit the unsubscribe pages directly from your browser and manage your subscriptions as needed.
-
-By following these steps, you can quickly and efficiently review and act on unsubscribe links across multiple email accounts, helping you maintain a cleaner, more manageable inbox.
-
-
----
-
-Embark on your journey to a cleaner inbox today with Unsubscribe Helper!
+The results are then displayed in a web interface, grouped by the sender's domain name, making it easy to go through them and unsubscribe from unwanted emails.
 

@@ -1,2 +1,24 @@
 unsub*.html
 *.json
+
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-selfcheck.json
+*.egg-info/
+dist/
+build/
+
+# Debug emails
+/debug_emails
+
+# Credentials
+credentials.json

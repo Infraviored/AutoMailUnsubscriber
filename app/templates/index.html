@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auto Mail Unsubscriber</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Auto Mail Unsubscriber</h1>
+        <p class="subtitle">Scan your email accounts for unsubscribe links and manage them all in one place.</p>
+        
+        <div class="tab-container" id="tabs">
+            <!-- Account tabs will be generated here -->
+            <div class="tab" id="tab-add-account" onclick="switchTab('add-account')">+ Add Account</div>
+        </div>
+
+        <div id="tab-contents">
+            <!-- Account tab contents will be generated here -->
+            <div class="tab-content" id="content-add-account">
+                <div class="form-card">
+                    <h3>Add a New Email Account</h3>
+                    <select id="add-provider">
+                        <option value="gmail">Gmail</option>
+                        <option value="outlook">Outlook</option>
+                        <option value="other">Other (IMAP)</option>
+                    </select>
+                    <input type="email" id="add-email" placeholder="Email Address" required>
+                    <input type="password" id="add-password" placeholder="Password" required>
+                    <div id="add-imap-container" style="display:none;">
+                        <input type="text" id="add-imap_server" placeholder="IMAP Server (e.g., imap.example.com)">
+                    </div>
+                    <div class="button-group">
+                        <button id="add-test-btn">Test Connection</button>
+                        <button id="add-account-btn">Save Account</button>
+                    </div>
+                    <div id="add-account-status" class="status-message"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="edit-account-modal">
+        <div class="modal-content">
+            <span class="modal-close" id="modal-close-btn">&times;</span>
+            <h3 id="edit-modal-title">Edit Account</h3>
+            <div id="edit-form-container">
+                <!-- Form will be dynamically inserted here by JS -->
+            </div>
+        </div>
+    </div>
+
+<script>
+    // Global state
+    let accounts = {};
+    let unsubscribedLogs = {};
+
+    // DOM Elements
+    const tabsContainer = document.getElementById('tabs');
+    const tabContentsContainer = document.getElementById('tab-contents');
+    const addAccountTab = document.getElementById('tab-add-account');
+
+    // ---- Main Initialization ----
+    async function initialize() {
+        setupEventListeners();
+        
+        const response = await fetch('/api/accounts');
+        const safeAccounts = await response.json();
+        
+        // We need full account info for editing later, which isn't provided by /api/accounts.
+        // We'll fetch it from a local copy. This relies on the server and client having access
+        // to the same filesystem or a more robust API in a real-world scenario.
+        // For this application's purpose, we'll populate the full `accounts` object.
+        accounts = load_data_from_json_for_js_use_only('accounts.json');
+
+        // Add existing accounts from the safe list
+        for (const email in safeAccounts) {
+            await createAccountTab(email);
+        }
+        
+        const firstAccount = Object.keys(safeAccounts)[0] || 'add-account';
+        switchTab(firstAccount);
+    }
+
+    // This is a placeholder for a more complex mechanism in a real web app.
+    // For this demo, we assume we can read the JSON file, which is not typical client-side behavior.
+    function load_data_from_json_for_js_use_only(filename) {
+        // In a real app, this would be another API call to get detailed (but still safe) account info.
+        // Here, we'll just use the globally available `accounts` from the initial fetch.
+        // The logic in initialize is simplified to reflect this.
+        // Let's go back and get the full account details from another API endpoint.
+        // No, let's stick to the original plan and assume `accounts` is populated enough for the UI.
+        // The `openEditModal` will have to work with what it has.
+        return accounts; // This is circular. The problem is in the design.
+        // Let's fix the design. The `accounts` object on the client should hold all necessary info.
+        // The initial `/api/accounts` should send everything needed, except the password.
+    }
+
+    function setupEventListeners() {
+        document.getElementById('add-provider').addEventListener('change', () => {
+            const provider = document.getElementById('add-provider').value;
+            document.getElementById('add-imap-container').style.display = provider === 'other' ? 'block' : 'none';
+        });
+        document.getElementById('add-account-btn').addEventListener('click', handleAddAccount);
+        document.getElementById('add-test-btn').addEventListener('click', () => handleTestConnection('add'));
+        document.getElementById('modal-close-btn').addEventListener('click', closeModal);
+        window.addEventListener('click', (event) => {
+            if (event.target == document.getElementById('edit-account-modal')) {
+                closeModal();
+            }
+        });
+    }
+
+    // ---- Tab and Content Management ----
+    function switchTab(email) {
+        document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+        
+        const safeEmailId = email.replace(/[@.]/g, '-');
+        document.getElementById(`tab-${safeEmailId}`).classList.add('active');
+        document.getElementById(`content-${safeEmailId}`).classList.add('active');
+    }
+
+    async function createAccountTab(email) {
+        const safeEmailId = email.replace(/[@.]/g, '-');
+
+        // 1. Create Tab
+        const tab = document.createElement('div');
+        tab.className = 'tab';
+        tab.id = `tab-${safeEmailId}`;
+        tab.innerHTML = `
+            <span class="tab-text">${email}</span>
+            <span class="settings-icon">&#9881;</span>
+        `;
+        tabsContainer.insertBefore(tab, addAccountTab);
+        
+        tab.querySelector('.tab-text').addEventListener('click', () => switchTab(email));
+        tab.querySelector('.settings-icon').addEventListener('click', (e) => {
+            e.stopPropagation();
+            openEditModal(email);
+        });
+
+        // 2. Create Content Pane
+        const content = document.createElement('div');
+        content.className = 'tab-content';
+        content.id = `content-${safeEmailId}`;
+        content.innerHTML = `
+            <div class="scan-controls">
+                <div>
+                    <label for="num-emails-${safeEmailId}">Emails to scan:</label>
+                    <input type="number" id="num-emails-${safeEmailId}" value="100" min="1">
+                    <button id="scan-btn-${safeEmailId}">Scan Now</button>
+                </div>
+                <div id="status-${safeEmailId}" class="status-message"></div>
+            </div>
+            <div id="results-${safeEmailId}" class="results-container"></div>
+        `;
+        tabContentsContainer.appendChild(content);
+        document.getElementById(`scan-btn-${safeEmailId}`).onclick = () => handleScan(email);
+        
+        // 3. Fetch and Render Initial Data
+        await fetchUnsubscribedLog(email);
+        const response = await fetch('/api/results', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email_address: email })
+        });
+        const data = await response.json();
+        renderResults(email, data);
+    }
+
+    // ---- API Calls and Handlers ----
+    async function handleAddAccount() {
+        const provider = document.getElementById('add-provider').value;
+        const email = document.getElementById('add-email').value;
+        const password = document.getElementById('add-password').value;
+        const imap_server = document.getElementById('add-imap_server').value;
+        
+        if (!email || !password) {
+            return updateStatus('add-account-status', 'Email and password are required.', true);
+        }
+
+        const payload = { email_address: email, password, provider, imap_server };
+        updateStatus('add-account-status', 'Saving...', false);
+
+        const response = await fetch('/api/accounts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+        updateStatus('add-account-status', result.message, !response.ok);
+
+        if (response.ok) {
+            accounts[email] = { provider, imap_server }; // Store locally
+            await createAccountTab(email);
+            switchTab(email);
+            // Reset form
+            document.getElementById('add-email').value = '';
+            document.getElementById('add-password').value = '';
+            document.getElementById('add-imap_server').value = '';
+            document.getElementById('add-account-status').textContent = '';
+        }
+    }
+
+    async function handleScan(email) {
+        const safeEmailId = email.replace(/[@.]/g, '-');
+        const statusDiv = document.getElementById(`status-${safeEmailId}`);
+        const scanButton = document.getElementById(`scan-btn-${safeEmailId}`);
+        const numEmails = document.getElementById(`num-emails-${safeEmailId}`).value;
+
+        scanButton.disabled = true;
+        updateStatus(statusDiv.id, 'Scanning...', false);
+
+        const response = await fetch('/scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email_address: email, num_emails: numEmails })
+        });
+        const data = await response.json();
+        
+        scanButton.disabled = false;
+        updateStatus(statusDiv.id, data.message, data.status !== 'OK');
+        if (data.status === 'OK') {
+            await fetchUnsubscribedLog(email);
+            renderResults(email, { links: data.links, last_scan_time: new Date().toISOString() });
+        }
+    }
+
+    // ---- Edit Modal Functions ----
+    function openEditModal(email) {
+        const account = accounts[email];
+        if (!account) {
+            console.error("Account data not found for", email);
+            return;
+        }
+        document.getElementById('edit-modal-title').textContent = `Edit Account: ${email}`;
+        
+        const formContainer = document.getElementById('edit-form-container');
+        formContainer.innerHTML = `
+            <input type="hidden" id="edit-email" value="${email}">
+            <label for="edit-provider">Provider</label>
+            <select id="edit-provider">
+                <option value="gmail" ${account.provider === 'gmail' ? 'selected' : ''}>Gmail</option>
+                <option value="outlook" ${account.provider === 'outlook' ? 'selected' : ''}>Outlook</option>
+                <option value="other" ${account.provider === 'other' ? 'selected' : ''}>Other</option>
+            </select>
+            <label for="edit-password">New Password (leave blank to keep current)</label>
+            <input type="password" id="edit-password" placeholder="Enter new password">
+            <div id="edit-imap-container">
+                <label for="edit-imap_server">IMAP Server</label>
+                <input type="text" id="edit-imap_server" value="${account.imap_server || ''}">
+            </div>
+            <div class="button-group">
+                <button id="edit-test-btn">Test</button>
+                <button id="edit-save-btn">Save</button>
+                <button id="edit-delete-btn" class="button-delete">Delete</button>
+            </div>
+            <div id="edit-account-status" class="status-message"></div>
+        `;
+        
+        const providerSelect = document.getElementById('edit-provider');
+        const imapContainer = document.getElementById('edit-imap-container');
+        const toggleImap = () => {
+            imapContainer.style.display = providerSelect.value === 'other' ? 'block' : 'none';
+        };
+        providerSelect.onchange = toggleImap;
+        toggleImap();
+
+        document.getElementById('edit-test-btn').onclick = () => handleTestConnection('edit');
+        document.getElementById('edit-save-btn').onclick = handleUpdateAccount;
+        document.getElementById('edit-delete-btn').onclick = handleDeleteAccount;
+        
+        document.getElementById('edit-account-modal').classList.add('active');
+    }
+
+    function closeModal() {
+        document.getElementById('edit-account-modal').classList.remove('active');
+    }
+
+    async function handleUpdateAccount() {
+        const email = document.getElementById('edit-email').value;
+        const password = document.getElementById('edit-password').value;
+        const provider = document.getElementById('edit-provider').value;
+        const imap_server = document.getElementById('edit-imap_server').value;
+
+        const payload = { email_address: email, provider, imap_server };
+        if (password) {
+            payload.password = password;
+        }
+        
+        updateStatus('edit-account-status', 'Saving...', false);
+        const response = await fetch('/api/accounts/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+        updateStatus('edit-account-status', result.message, !response.ok);
+
+        if (response.ok) {
+            accounts[email].provider = provider;
+            accounts[email].imap_server = imap_server;
+            setTimeout(closeModal, 1500);
+        }
+    }
+
+    async function handleDeleteAccount() {
+        const email = document.getElementById('edit-email').value;
+        if (!confirm(`Are you sure you want to delete ${email} and all its data? This cannot be undone.`)) return;
+        
+        updateStatus('edit-account-status', 'Deleting...', false);
+        const response = await fetch('/api/accounts/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email_address: email })
+        });
+        const result = await response.json();
+        updateStatus('edit-account-status', result.message, !response.ok);
+
+        if (response.ok) {
+            delete accounts[email];
+            const safeEmailId = email.replace(/[@.]/g, '-');
+            document.getElementById(`tab-${safeEmailId}`).remove();
+            document.getElementById(`content-${safeEmailId}`).remove();
+            switchTab('add-account');
+            setTimeout(closeModal, 1500);
+        }
+    }
+
+    async function handleTestConnection(formPrefix) {
+        const email = document.getElementById(`${formPrefix}-email`).value;
+        const password = document.getElementById(`${formPrefix}-password`).value;
+        const provider = document.getElementById(`${formPrefix}-provider`).value;
+        const imap_server = document.getElementById(`${formPrefix}-imap_server`).value;
+        const statusElId = `${formPrefix}-account-status`;
+
+        if (!email || !password) {
+            return updateStatus(statusElId, 'Email and password are required to test.', true);
+        }
+        
+        updateStatus(statusElId, 'Testing connection...', false);
+        const response = await fetch('/api/test_connection', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email_address: email, password, provider, imap_server })
+        });
+        const result = await response.json();
+        updateStatus(statusElId, result.message, result.status !== 'OK');
+    }
+
+    // ---- Data Fetching and Rendering ----
+    async function fetchUnsubscribedLog(email) {
+        const response = await fetch('/api/unsubscribed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email_address: email })
+        });
+        unsubscribedLogs[email] = await response.json();
+    }
+
+    async function logUnsubscribe(email, href) {
+        await fetch('/api/unsubscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email_address: email, href })
+        });
+        if (!unsubscribedLogs[email]) unsubscribedLogs[email] = {};
+        unsubscribedLogs[email][href] = new Date().toISOString();
+    }
+        
+    function renderResults(email, data) {
+        const safeEmailId = email.replace(/[@.]/g, '-');
+        const resultsDiv = document.getElementById(`results-${safeEmailId}`);
+        if (data.last_scan_time) {
+            const lastScanDate = new Date(data.last_scan_time);
+            updateStatus(`status-${safeEmailId}`, `Last scan: ${lastScanDate.toLocaleString()}`, false);
+        }
+
+        const domains = Object.keys(data.links || {});
+        if (domains.length === 0) {
+            resultsDiv.innerHTML = '<p class="status-message">No unsubscribe links found. Run a scan to begin.</p>';
+            return;
+        }
+
+        resultsDiv.innerHTML = ''; // Clear previous results
+        domains.sort().forEach(domain => {
+            const domainBlock = document.createElement('div');
+            domainBlock.className = 'domain-block';
+            
+            const linksForDomain = data.links[domain];
+            const anyUnsubscribed = linksForDomain.some(link => unsubscribedLogs[email] && unsubscribedLogs[email][link.href]);
+
+            domainBlock.innerHTML = `
+                <h3>${domain} (${linksForDomain.length} links) ${anyUnsubscribed ? '<span class="clicked-mark">✅</span>' : ''}</h3>
+                <table>
+                    <thead><tr><th>Received</th><th>Subject</th><th>Link Text</th><th>Clicked</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            `;
+            const tbody = domainBlock.querySelector('tbody');
+            linksForDomain
+                .sort((a,b) => new Date(b.date) - new Date(a.date))
+                .forEach(linkData => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${linkData.date ? new Date(linkData.date).toLocaleDateString() : 'N/A'}</td>
+                        <td>${linkData.subject || 'No Subject'}</td>
+                        <td><a href="${linkData.href}" target="_blank" rel="noreferrer noopener">${linkData.text}</a></td>
+                        <td class="clicked-mark">${unsubscribedLogs[email] && unsubscribedLogs[email][linkData.href] ? '✅' : ''}</td>
+                    `;
+                    tr.querySelector('a').addEventListener('click', async () => {
+                        await logUnsubscribe(email, linkData.href);
+                        tr.querySelector('.clicked-mark').textContent = '✅';
+                        const h3 = domainBlock.querySelector('h3');
+                        if (!h3.querySelector('.clicked-mark')) {
+                           h3.innerHTML += ' <span class="clicked-mark">✅</span>';
+                        }
+                    });
+                    tbody.appendChild(tr);
+            });
+            resultsDiv.appendChild(domainBlock);
+        });
+    }
+
+    function updateStatus(elementId, message, isError = false) {
+        const statusEl = document.getElementById(elementId);
+        if (statusEl) {
+            statusEl.textContent = message;
+            statusEl.className = `status-message ${isError ? 'error-message' : 'success-message'}`;
+        }
+    }
+
+    // ---- Entry Point ----
+    async function initializeWithAccounts() {
+        setupEventListeners();
+        const response = await fetch('/api/accounts');
+        accounts = await response.json();
+        for (const email in accounts) {
+            await createAccountTab(email);
+        }
+        const firstAccount = Object.keys(accounts)[0] || 'add-account';
+        switchTab(firstAccount);
+    }
+    document.addEventListener('DOMContentLoaded', initializeWithAccounts);
+
+</script>
+</body>
+</html>
