@@ -26,15 +26,24 @@
                         <option value="outlook">Outlook</option>
                         <option value="other">Other (IMAP)</option>
                     </select>
+
+                    <div id="add-form-gmail">
+                        <p>To add a Gmail account, you'll be redirected to Google to sign in securely.</p>
+                        <button id="google-signin-btn" class="google-btn">Sign in with Google</button>
+                    </div>
+
+                    <div id="add-form-other" style="display:none;">
                     <input type="email" id="add-email" placeholder="Email Address" required>
                     <input type="password" id="add-password" placeholder="Password" required>
-                    <div id="add-imap-container" style="display:none;">
+                        <div id="add-imap-container">
                         <input type="text" id="add-imap_server" placeholder="IMAP Server (e.g., imap.example.com)">
                     </div>
                     <div class="button-group">
                         <button id="add-test-btn">Test Connection</button>
                         <button id="add-account-btn">Save Account</button>
                     </div>
+                    </div>
+                    
                     <div id="add-account-status" class="status-message"></div>
                 </div>
             </div>
@@ -100,8 +109,20 @@
     function setupEventListeners() {
         document.getElementById('add-provider').addEventListener('change', () => {
             const provider = document.getElementById('add-provider').value;
-            document.getElementById('add-imap-container').style.display = provider === 'other' ? 'block' : 'none';
+            const isGmail = provider === 'gmail';
+            const isOther = provider === 'other';
+
+            document.getElementById('add-form-gmail').style.display = isGmail ? 'block' : 'none';
+            document.getElementById('add-form-other').style.display = isGmail ? 'none' : 'block';
+            document.getElementById('add-imap-container').style.display = isOther ? 'block' : 'none';
+            // Also hide the test button for gmail
+            document.querySelector('#add-form-other .button-group #add-test-btn').style.display = isGmail ? 'none' : 'inline-block';
         });
+
+        document.getElementById('google-signin-btn').addEventListener('click', () => {
+            window.location.href = '/login/google';
+        });
+
         document.getElementById('add-account-btn').addEventListener('click', handleAddAccount);
         document.getElementById('add-test-btn').addEventListener('click', () => handleTestConnection('add'));
         document.getElementById('modal-close-btn').addEventListener('click', closeModal);
@@ -173,6 +194,11 @@
     // ---- API Calls and Handlers ----
     async function handleAddAccount() {
         const provider = document.getElementById('add-provider').value;
+        if (provider === 'gmail') {
+            // Gmail accounts are added via OAuth redirect, not this form.
+            return;
+        }
+
         const email = document.getElementById('add-email').value;
         const password = document.getElementById('add-password').value;
         const imap_server = document.getElementById('add-imap_server').value;
@@ -237,50 +263,50 @@
         }
         document.getElementById('edit-modal-title').textContent = `Edit Account: ${email}`;
         
+        const isGmail = account.provider === 'gmail';
+        
         const formContainer = document.getElementById('edit-form-container');
         formContainer.innerHTML = `
             <input type="hidden" id="edit-email" value="${email}">
             <label for="edit-provider">Provider</label>
-            <select id="edit-provider">
+            <select id="edit-provider" ${isGmail ? 'disabled' : ''}>
                 <option value="gmail" ${account.provider === 'gmail' ? 'selected' : ''}>Gmail</option>
                 <option value="outlook" ${account.provider === 'outlook' ? 'selected' : ''}>Outlook</option>
                 <option value="other" ${account.provider === 'other' ? 'selected' : ''}>Other</option>
             </select>
+            <div id="edit-password-section" style="display: ${isGmail ? 'none' : 'block'};">
             <label for="edit-password">New Password (leave blank to keep current)</label>
             <input type="password" id="edit-password" placeholder="Enter new password">
-            <div id="edit-imap-container">
+            </div>
+            <div id="edit-imap-section" style="display: ${account.provider === 'other' ? 'block' : 'none'};">
                 <label for="edit-imap_server">IMAP Server</label>
                 <input type="text" id="edit-imap_server" value="${account.imap_server || ''}">
             </div>
             <div class="button-group">
-                <button id="edit-test-btn">Test</button>
-                <button id="edit-save-btn">Save</button>
-                <button id="edit-delete-btn" class="button-delete">Delete</button>
+                <button id="edit-update-btn">Update</button>
+                <button id="edit-delete-btn">Delete Account</button>
             </div>
-            <div id="edit-account-status" class="status-message"></div>
+            <div id="edit-status" class="status-message"></div>
         `;
         
-        const providerSelect = document.getElementById('edit-provider');
-        const imapContainer = document.getElementById('edit-imap-container');
-        const toggleImap = () => {
-            imapContainer.style.display = providerSelect.value === 'other' ? 'block' : 'none';
+        if (!isGmail) {
+            document.getElementById('edit-provider').onchange = () => {
+                const provider = document.getElementById('edit-provider').value;
+                document.getElementById('edit-imap-section').style.display = provider === 'other' ? 'block' : 'none';
         };
-        providerSelect.onchange = toggleImap;
-        toggleImap();
+        }
 
-        document.getElementById('edit-test-btn').onclick = () => handleTestConnection('edit');
-        document.getElementById('edit-save-btn').onclick = handleUpdateAccount;
-        document.getElementById('edit-delete-btn').onclick = handleDeleteAccount;
+        document.getElementById('edit-update-btn').addEventListener('click', () => handleUpdateAccount(email));
+        document.getElementById('edit-delete-btn').addEventListener('click', () => handleDeleteAccount(email));
         
-        document.getElementById('edit-account-modal').classList.add('active');
+        document.getElementById('edit-account-modal').style.display = 'flex';
     }
 
     function closeModal() {
         document.getElementById('edit-account-modal').classList.remove('active');
     }
 
-    async function handleUpdateAccount() {
-        const email = document.getElementById('edit-email').value;
+    async function handleUpdateAccount(email) {
         const password = document.getElementById('edit-password').value;
         const provider = document.getElementById('edit-provider').value;
         const imap_server = document.getElementById('edit-imap_server').value;
@@ -306,8 +332,7 @@
         }
     }
 
-    async function handleDeleteAccount() {
-        const email = document.getElementById('edit-email').value;
+    async function handleDeleteAccount(email) {
         if (!confirm(`Are you sure you want to delete ${email} and all its data? This cannot be undone.`)) return;
         
         updateStatus('edit-account-status', 'Deleting...', false);

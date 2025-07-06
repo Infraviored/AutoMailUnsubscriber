@@ -8,7 +8,13 @@ from config import DEBUG, DEBUG_EMAIL_DIR
 import logging
 import os
 from abc import ABC, abstractmethod
-from typing import Dict
+from typing import Dict, Any
+import base64
+
+# --- Google OAuth Imports ---
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 # --- Setup Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -22,7 +28,7 @@ class EmailProvider(ABC):
         self.email_address = email_address
         self.password = password
         self.imap_server = imap_server
-        self.mail: imaplib.IMAP4_SSL | None = None
+        self.mail: Any = None
 
     @abstractmethod
     def connect(self) -> tuple[str, str]:
@@ -188,9 +194,124 @@ class IMAPProvider(EmailProvider):
 
 class GmailProvider(EmailProvider):
     def connect(self) -> tuple[str, str]:
-        # To be implemented with OAuth2
-        logging.info("Gmail provider selected. Needs OAuth2 implementation.")
-        return "ERROR", "Gmail (OAuth2) is not yet supported."
+        try:
+            creds_dict = self.password  # The 'password' field now holds the credentials dict
+            if not creds_dict:
+                return "ERROR", "OAuth credentials are not provided."
+
+            creds = Credentials.from_authorized_user_info(creds_dict, scopes=['https://www.googleapis.com/auth/gmail.readonly'])
+
+            if not creds or not creds.valid:
+                # Here you might need to handle token refresh if you have a refresh token
+                # For this implementation, we assume valid credentials or ability to refresh.
+                if creds and creds.expired and creds.refresh_token:
+                    # The google-auth library handles refresh automatically on request.
+                    logging.info("Google credentials expired, will be refreshed on next API call.")
+                else:
+                    return "ERROR", "Invalid or expired Google credentials, please re-authenticate."
+
+            # The 'mail' attribute will hold the Gmail API service object
+            self.mail = build('gmail', 'v1', credentials=creds)
+            
+            # Verify connection by getting profile info
+            profile = self.mail.users().getProfile(userId='me').execute()
+            logging.info(f"Successfully connected to Gmail as {profile['emailAddress']}")
+            return "OK", f"Successfully connected to Gmail as {profile['emailAddress']}"
+
+        except HttpError as error:
+            logging.error(f"An error occurred with Google API: {error}")
+            return "ERROR", f"An error occurred: {error}"
+        except Exception as e:
+            logging.error(f"Failed to connect to Gmail: {e}")
+            return "ERROR", f"Failed to connect: {e}"
+
+    def disconnect(self) -> None:
+        self.mail = None
+        logging.info("Disconnected from Gmail (no action needed).")
+
+    def scan_emails(self, num_emails_to_scan: int = 50, since_uid: str | None = None) -> tuple[str, str, Dict, bytes | None]:
+        if not self.mail:
+            logging.error("Scan attempt failed: Not connected to the email server.")
+            return "ERROR", "Not connected to the email server.", {}, None
+        
+        try:
+            # The Gmail API does not use IMAP UIDs in the same way. 
+            # We'll list messages. The API paginates, so we'll fetch one page.
+            # `since_uid` logic will need to be adapted. For now, we fetch the latest.
+            
+            response = self.mail.users().messages().list(userId='me', maxResults=num_emails_to_scan).execute()
+            messages = response.get('messages', [])
+            
+            all_unsubscribe_links = {}
+            last_uid = None # In Gmail API, this would be message ID.
+
+            if not messages:
+                logging.info("No new messages found in Gmail.")
+                return "OK", "Scan complete. No new messages.", {}, None
+
+            last_uid = messages[0]['id'].encode('utf-8')
+
+            for message_info in tqdm(messages, desc="Scanning Gmail emails"):
+                msg_id = message_info['id']
+                msg = self.mail.users().messages().get(userId='me', id=msg_id, format='full').execute()
+
+                payload = msg.get('payload', {})
+                headers = payload.get('headers', [])
+                
+                subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject')
+                from_ = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown Sender')
+                date_str = next((h['value'] for h in headers if h['name'] == 'Date'), None)
+                
+                email_date = None
+                if date_str:
+                    try:
+                        email_date = parsedate_to_datetime(date_str).isoformat()
+                    except Exception:
+                        logging.warning(f"Could not parse date string: {date_str}")
+                
+                logging.info(f"Processing Gmail from '{from_}' with subject '{subject}'")
+
+                html_content = ""
+                parts = payload.get('parts', [])
+                if parts:
+                    for part in parts:
+                        if part['mimeType'] == 'text/html':
+                            body = part.get('body', {})
+                            data = body.get('data')
+                            if data:
+                                html_content = base64.urlsafe_b64decode(data).decode('utf-8')
+                                break
+                elif payload.get('body', {}).get('data'): # Non-multipart
+                     if payload['mimeType'] == 'text/html':
+                        data = payload['body']['data']
+                        html_content = base64.urlsafe_b64decode(data).decode('utf-8')
+
+                if html_content:
+                    # (The rest of the logic to find links is similar to the IMAP provider)
+                    links = find_unsubscribe_links(html_content)
+                    if links:
+                        sender_domain = ""
+                        if from_ and '@' in from_:
+                            sender_domain = from_.split('@')[-1].replace('>', '').split(' ')[0]
+                        elif from_:
+                            sender_domain = from_
+
+                        if sender_domain:
+                            if sender_domain not in all_unsubscribe_links:
+                                all_unsubscribe_links[sender_domain] = []
+                            for link_data in links:
+                                link_data['subject'] = subject
+                                link_data['date'] = email_date
+                                all_unsubscribe_links[sender_domain].append(link_data)
+
+            return "OK", "Gmail scan complete.", all_unsubscribe_links, last_uid
+
+        except HttpError as error:
+            logging.error(f"An API error occurred during Gmail scan: {error}")
+            return "ERROR", f"API Error: {error}", {}, None
+        except Exception as e:
+            logging.error(f"An unexpected error occurred during Gmail scan: {e}")
+            return "ERROR", f"An unexpected error occurred: {e}", {}, None
 
 class OutlookProvider(EmailProvider):
     def connect(self) -> tuple[str, str]:
@@ -201,6 +322,7 @@ class OutlookProvider(EmailProvider):
 def get_email_client(provider_name, email_address, password, imap_server=None):
     provider_name = provider_name.lower()
     if provider_name == 'gmail':
+        # For Gmail, 'password' is now the credentials dictionary
         return GmailProvider(email_address, password, imap_server)
     elif provider_name == 'outlook':
         return OutlookProvider(email_address, password, imap_server)

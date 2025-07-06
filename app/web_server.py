@@ -1,10 +1,17 @@
-from flask import Flask, render_template, jsonify, request, send_from_directory
+from flask import Flask, render_template, jsonify, request, send_from_directory, redirect, url_for, session
 from app.email_client import get_email_client
 import json
 import os
 import datetime
 
+# --- Google OAuth Imports ---
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
+from googleapiclient.discovery import build
+import google.auth.transport.requests
+
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "a-secure-secret-key-for-sessions") # For session
 ACCOUNTS_FILE = 'accounts.json'  # Renamed from credentials.json
 RESULTS_FILE = 'scan_results.json'
 UNSUBSCRIBE_LINKS_FILE = 'unsubscribe_links.html'
@@ -110,6 +117,57 @@ def append_links_to_file(links):
     
     with open(UNSUBSCRIBE_LINKS_FILE, 'w', encoding='utf-8') as f:
         f.write(html_content)
+
+def credentials_to_dict(credentials):
+    return {'token': credentials.token,
+            'refresh_token': credentials.refresh_token,
+            'token_uri': credentials.token_uri,
+            'client_id': credentials.client_id,
+            'client_secret': credentials.client_secret,
+            'scopes': credentials.scopes}
+
+@app.route('/login/google')
+def google_login():
+    # This allows http for local development.
+    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+    
+    flow = Flow.from_client_secrets_file(
+        'client_secret.json',
+        scopes=['https://www.googleapis.com/auth/gmail.readonly'],
+        redirect_uri=url_for('oauth2callback', _external=True))
+    authorization_url, state = flow.authorization_url(
+        access_type='offline',
+        include_granted_scopes='true')
+    session['state'] = state
+    return redirect(authorization_url)
+
+@app.route('/oauth2callback')
+def oauth2callback():
+    state = session['state']
+
+    flow = Flow.from_client_secrets_file(
+        'client_secret.json',
+        scopes=['https://www.googleapis.com/auth/gmail.readonly'],
+        state=state,
+        redirect_uri=url_for('oauth2callback', _external=True))
+
+    flow.fetch_token(authorization_response=request.url)
+
+    credentials = flow.credentials
+
+    # Get user's email address
+    service = build('gmail', 'v1', credentials=credentials)
+    profile = service.users().getProfile(userId='me').execute()
+    email_address = profile['emailAddress']
+
+    accounts = load_data(ACCOUNTS_FILE)
+    accounts[email_address] = {
+        "provider": "gmail",
+        "credentials": credentials_to_dict(credentials)
+    }
+    save_data(ACCOUNTS_FILE, accounts)
+
+    return redirect(url_for('index'))
 
 @app.route('/api/accounts', methods=['GET'])
 def get_accounts():
@@ -248,54 +306,41 @@ def scan():
         num_emails = int(data.get('num_emails', 50))
     except (ValueError, TypeError):
         num_emails = 50
-    
-    results = load_data(RESULTS_FILE)
-    account_results = results.get(email, {})
-    last_uid = account_results.get('last_uid')
+
+    password_or_creds = None
+    if account_info.get('provider') == 'gmail':
+        password_or_creds = account_info.get('credentials')
+    else:
+        password_or_creds = account_info.get('password')
 
     try:
         client = get_email_client(
-            account_info['provider'], email, account_info['password'], account_info.get('imap_server')
+            account_info['provider'],
+            email,
+            password_or_creds,
+            account_info.get('imap_server')
         )
-    except ValueError as e:
-        return jsonify({"status": "ERROR", "message": str(e)}), 400
-    
-    status, message = client.connect()
-    if status == "ERROR":
-        return jsonify({"status": "ERROR", "message": message}), 500
+        status, message = client.connect()
+        if status != "OK":
+            return jsonify({"status": "ERROR", "message": f"Connection failed: {message}"}), 500
 
-    status, message, new_links, latest_uid = client.scan_emails(
-        num_emails_to_scan=num_emails, since_uid=last_uid
-    )
-    client.disconnect()
+        scan_results_data = load_data(RESULTS_FILE)
+        last_uid = scan_results_data.get(email, {}).get('last_uid')
 
-    if status == "ERROR":
-        return jsonify({"status": "ERROR", "message": message}), 500
+        status, message, links, new_last_uid = client.scan_emails(num_emails, last_uid)
+        client.disconnect()
 
-    existing_links = account_results.get('links', {})
-    new_link_count = 0
-    for domain, links in new_links.items():
-        if domain not in existing_links:
-            existing_links[domain] = []
-        
-        unique_links = {link['href']: link for link in existing_links.get(domain, [])}
-        for link in links:
-            if link['href'] not in unique_links:
-                unique_links[link['href']] = link
-                new_link_count += 1
-        
-        existing_links[domain] = list(unique_links.values())
+        if status == 'OK':
+            scan_results_data[email] = {
+                "last_scan_time": datetime.datetime.utcnow().isoformat(),
+                "last_uid": new_last_uid.decode('utf-8') if new_last_uid else last_uid,
+                "links": links
+            }
+            save_data(RESULTS_FILE, scan_results_data)
 
-    account_results['links'] = existing_links
-    account_results['last_scan_time'] = datetime.datetime.utcnow().isoformat()
-    if latest_uid:
-        account_results['last_uid'] = latest_uid.decode()
-
-    results[email] = account_results
-    save_data(RESULTS_FILE, results)
-
-    final_message = f"Scan complete for {email}. Found {new_link_count} new unsubscribe links."
-    return jsonify({"status": "OK", "message": final_message, "links": existing_links})
+        return jsonify({"status": status, "message": message, "links": links})
+    except Exception as e:
+        return jsonify({"status": "ERROR", "message": f"An unexpected error occurred during scan: {e}"}), 500
 
 def run():
     # Clean up old files if they exist
