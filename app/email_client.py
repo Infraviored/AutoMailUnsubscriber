@@ -45,12 +45,21 @@ class EmailProvider(ABC):
         # This implementation can be shared across all IMAP-based providers
         if not self.mail:
             logging.error("Scan attempt failed: Not connected to the email server.")
-            # In a generator, we can't return, so we yield an error and stop.
             yield {"status": "error", "message": "Not connected to the email server."}
             return
 
-        self.mail.select("inbox")
-        logging.info("Selected INBOX.")
+        # --- FIX: Login and Select right before scanning for non-Gmail providers ---
+        if not isinstance(self, GmailProvider):
+            try:
+                self.mail.login(self.email_address, self.password)
+                status, _ = self.mail.select("inbox")
+                if status != 'OK':
+                    raise imaplib.IMAP4.error("Failed to select INBOX.")
+                logging.info(f"IMAP login and INBOX selection successful for {self.email_address}")
+            except Exception as e:
+                logging.error(f"IMAP authentication/select failed for {self.email_address}: {e}")
+                yield {"status": "error", "message": f"Authentication failed: {e}"}
+                return
         
         search_criteria = "ALL"
         if since_date:
@@ -206,13 +215,13 @@ class IMAPProvider(EmailProvider):
         if not self.imap_server:
             return "ERROR", "IMAP server is required for this provider."
         try:
+            # Only create the connection object here. Login/select will be done in scan_emails.
             self.mail = imaplib.IMAP4_SSL(self.imap_server)
-            self.mail.login(self.email_address, self.password)
-            logging.info(f"Successfully connected to {self.imap_server} for {self.email_address}")
-            return "OK", "Successfully connected."
+            logging.info(f"Successfully created IMAP SSL object for {self.imap_server}")
+            return "OK", "Successfully created IMAP connection object."
         except Exception as e:
-            logging.error(f"Failed to connect to IMAP server: {e}")
-            return "ERROR", f"Failed to connect: {e}"
+            logging.error(f"Failed to create IMAP connection for {self.imap_server}: {e}")
+            return "ERROR", f"Failed to create IMAP connection: {e}"
 
     # This provider uses the default scan_emails from EmailProvider and logout from EmailProvider
 

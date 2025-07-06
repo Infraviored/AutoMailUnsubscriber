@@ -7,10 +7,25 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-    <div class="container">
-        <h1 class="dashboard-title">unsubmy.email</h1>
-        <p class="subtitle">Scan your email accounts for unsubscribe links and manage them all in one place.</p>
-        
+    <header class="main-header">
+        <div class="container">
+            <a href="{{ url_for('dashboard') }}" class="header-logo">unsubmy.email</a>
+            <nav class="header-nav">
+                <div class="user-menu">
+                    <span id="user-email-placeholder">{{ current_user.email }}</span>
+                    <div class="dropdown">
+                        <button class="dropdown-button">&#9662;</button>
+                        <div class="dropdown-content">
+                            <a href="#" id="account-settings-link">Account Settings</a>
+                            <a href="{{ url_for('logout') }}">Logout</a>
+                        </div>
+                    </div>
+                </div>
+            </nav>
+        </div>
+    </header>
+
+    <div class="container main-content">
         <div class="tab-container" id="tabs">
             <!-- Account tabs will be generated here -->
             <div class="tab" id="tab-add-account" onclick="switchTab('add-account')">+ Add Account</div>
@@ -50,12 +65,37 @@
         </div>
     </div>
 
+    <!-- Edit Linked Account Modal -->
     <div class="modal-overlay" id="edit-account-modal">
         <div class="modal-content">
             <span class="modal-close" id="modal-close-btn">&times;</span>
             <h3 id="edit-modal-title">Edit Account</h3>
             <div id="edit-form-container">
                 <!-- Form will be dynamically inserted here by JS -->
+            </div>
+        </div>
+    </div>
+
+    <!-- User Account Settings Modal -->
+    <div class="modal-overlay" id="user-settings-modal">
+        <div class="modal-content">
+            <span class="modal-close" id="user-settings-close-btn">&times;</span>
+            <h3>Account Settings</h3>
+            <div class="settings-form-container">
+                <h4>Change Password</h4>
+                <form action="{{ url_for('change_password') }}" method="POST" class="settings-form">
+                    <input type="password" name="current_password" placeholder="Current Password" required>
+                    <input type="password" name="new_password" placeholder="New Password (min. 8 characters)" required>
+                    <button type="submit">Update Password</button>
+                </form>
+            </div>
+            <hr class="separator-light">
+            <div class="settings-form-container">
+                <h4>Delete Account</h4>
+                <p>Permanently delete your unsubmy.email account and all associated data. This action is irreversible.</p>
+                <form action="{{ url_for('delete_account') }}" method="POST" onsubmit="return confirm('Are you sure you want to permanently delete your account? All your data will be removed and this cannot be undone.');">
+                    <button type="submit" class="btn-danger">Delete My Account</button>
+                </form>
             </div>
         </div>
     </div>
@@ -113,6 +153,15 @@
         window.addEventListener('click', (event) => {
             if (event.target == document.getElementById('edit-account-modal')) {
                 closeModal();
+            }
+        });
+
+        // Event listeners for new user settings modal
+        document.getElementById('account-settings-link').addEventListener('click', openUserSettingsModal);
+        document.getElementById('user-settings-close-btn').addEventListener('click', closeUserSettingsModal);
+        window.addEventListener('click', (event) => {
+            if (event.target == document.getElementById('user-settings-modal')) {
+                closeUserSettingsModal();
             }
         });
     }
@@ -270,32 +319,39 @@
         scanButton.disabled = true;
         scanButton.style.background = 'linear-gradient(to right, #4CAF50 0%, #ddd 0%)';
         scanButton.textContent = 'Starting...';
+        updateStatus(statusDiv.id, 'Initiating scan...', false);
         
         const eventSource = new EventSource(`/scan?email_address=${encodeURIComponent(email)}&${scanParams}`);
 
         eventSource.onmessage = function(event) {
+            console.log("Received SSE event:", event.data); // DEBUG
             const data = JSON.parse(event.data);
 
             if (data.error) {
-                updateStatus(statusDiv.id, data.error, true);
+                updateStatus(statusDiv.id, `Error: ${data.error}`, true);
                 eventSource.close();
                 resetScanButton(scanButton);
                 return;
             }
 
             if (data.status === 'complete') {
-                updateStatus(statusDiv.id, data.message, false);
+                updateStatus(statusDiv.id, "Scan complete. Processing results...", false);
                 eventSource.close();
                 resetScanButton(scanButton);
                 // Final results rendering
                 renderResults(email, { links: data.links, scan_history: data.scan_history });
+                updateStatus(statusDiv.id, "Results loaded.", false);
                 return;
             }
             
-            const percentage = (data.progress / data.total) * 100;
-            scanButton.style.background = `linear-gradient(to right, #4CAF50 ${percentage}%, #ddd ${percentage}%)`;
-            scanButton.textContent = `Scanning... (${data.progress}/${data.total})`;
-            updateStatus(statusDiv.id, `Processing: ${data.current_email_subject}`, false);
+            // This is the progress update part
+            if (data.status === 'progress' && data.total > 0) {
+                const percentage = (data.progress / data.total) * 100;
+                scanButton.style.background = `linear-gradient(to right, #4CAF50 ${percentage}%, #ddd ${percentage}%)`;
+                scanButton.textContent = `Scanning... (${data.progress}/${data.total})`;
+                const subjectText = data.current_email_subject ? `: ${data.current_email_subject}` : '';
+                updateStatus(statusDiv.id, `Processing${subjectText}`, false);
+            }
         };
 
         eventSource.onerror = function(err) {
@@ -579,6 +635,15 @@
             statusDiv.textContent = message;
             statusDiv.className = `status-message ${isError ? 'error' : 'success'}`;
         }
+    }
+
+    // ---- User Settings Modal ----
+    function openUserSettingsModal() {
+        document.getElementById('user-settings-modal').style.display = 'flex';
+    }
+
+    function closeUserSettingsModal() {
+        document.getElementById('user-settings-modal').style.display = 'none';
     }
 
     document.addEventListener('DOMContentLoaded', initialize);

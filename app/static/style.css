@@ -169,6 +169,9 @@ hr.separator {
 
 
 /* --- Dashboard: General --- */
+.main-content {
+    padding-top: 0;
+}
 h1.dashboard-title {
     font-size: 2.5em;
     text-align: center;
@@ -421,6 +424,135 @@ td:last-child, th:last-child {
     color: #f85149;
 }
 #edit-delete-btn:hover {
-    background-color: #f85149;
+    background-color: #da3633;
+    border-color: #f85149;
+}
+
+/* --- Account Actions --- */
+.account-actions {
+    margin-top: 40px;
+    padding: 20px;
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    text-align: center;
+}
+
+.account-actions h3 {
+    margin-top: 0;
+    margin-bottom: 20px;
+}
+
+.account-actions p {
+    color: #8b949e;
+    font-size: 0.9em;
+    max-width: 500px;
+    margin: 10px auto 20px auto;
+}
+
+.settings-form-container {
+    margin-bottom: 20px;
+}
+.settings-form-container:last-child {
+    margin-bottom: 0;
+}
+.settings-form-container h4 {
+    margin-bottom: 15px;
+    color: #c9d1d9;
+}
+.settings-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-width: 400px;
+    margin: 0 auto;
+}
+.separator-light {
+    border: none;
+    border-top: 1px solid #30363d;
+    margin: 30px 0;
+}
+
+.btn-danger {
+    background-color: #da3633;
     color: white;
+    border: 1px solid #f85149;
+    padding: 10px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all 0.2s ease-in-out;
+}
+
+.btn-danger:hover {
+    background-color: #f85149;
+}
+
+/* --- Header --- */
+.main-header {
+    background-color: #161b22;
+    border-bottom: 1px solid #30363d;
+    padding: 10px 0;
+    margin-bottom: 30px;
+}
+.main-header .container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 0 auto;
+}
+.header-logo {
+    font-size: 1.5em;
+    font-weight: 600;
+    color: #c9d1d9;
+    text-decoration: none;
+}
+.header-logo:hover {
+    text-decoration: none;
+    color: #fff;
+}
+.user-menu {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+#user-email-placeholder {
+    color: #8b949e;
+    margin-right: 10px;
+}
+.dropdown {
+    position: relative;
+    display: inline-block;
+}
+.dropdown-button {
+    background: none;
+    border: none;
+    color: #8b949e;
+    cursor: pointer;
+    font-size: 1.2em;
+}
+.dropdown-content {
+    display: none;
+    position: absolute;
+    right: 0;
+    background-color: #161b22;
+    min-width: 160px;
+    box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2);
+    z-index: 100;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+}
+.dropdown-content a {
+    color: #c9d1d9;
+    padding: 12px 16px;
+    text-decoration: none;
+    display: block;
+}
+.dropdown-content a:hover {
+    background-color: #30363d;
+    color: #fff;
+    text-decoration: none;
+}
+.dropdown:hover .dropdown-content {
+    display: block;
 } 

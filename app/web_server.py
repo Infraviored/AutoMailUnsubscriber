@@ -5,7 +5,8 @@ import logging
 from flask import Flask, render_template, jsonify, request, redirect, url_for, session, Response, flash
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from app.email_client import get_email_client
-from app.models import db, User, LinkedAccount
+from app.models import db, User, LinkedAccount, UnsubscribeLink
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 # --- Google OAuth Imports ---
 from google.oauth2.credentials import Credentials
@@ -18,11 +19,20 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get("SECRET_KEY", "a-very-secure-secret-key")
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['PREFERRED_URL_SCHEME'] = 'https'
+
+# --- FIX for Reverse Proxy ---
+# Tell the app that it's behind a proxy and to trust the X-Forwarded-Proto header.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
 db.init_app(app)
 
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
+
+# --- Database Initialization ---
+with app.app_context():
+    db.create_all()
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -81,6 +91,50 @@ def register():
 def logout():
     logout_user()
     return redirect(url_for('index'))
+
+@app.route('/change_password', methods=['POST'])
+@login_required
+def change_password():
+    """Changes the current user's password."""
+    current_password = request.form.get('current_password')
+    new_password = request.form.get('new_password')
+
+    if not current_user.check_password(current_password):
+        flash('Your current password was incorrect.', 'error')
+        return redirect(url_for('dashboard'))
+    
+    if len(new_password) < 8:
+        flash('Your new password must be at least 8 characters long.', 'error')
+        return redirect(url_for('dashboard'))
+
+    current_user.set_password(new_password)
+    db.session.commit()
+    
+    flash('Your password has been changed successfully.', 'success')
+    return redirect(url_for('dashboard'))
+
+@app.route('/delete_account', methods=['POST'])
+@login_required
+def delete_account():
+    """Deletes the user's account and all associated data."""
+    try:
+        user_id = current_user.id
+        user = User.query.get(user_id)
+        if user:
+            # The cascade delete on the model will handle linked accounts
+            db.session.delete(user)
+            db.session.commit()
+            logout_user()
+            flash('Your account has been successfully deleted.', 'success')
+            return redirect(url_for('index'))
+        else:
+            flash('User not found.', 'error')
+            return redirect(url_for('dashboard'))
+    except Exception as e:
+        logging.error(f"Error deleting account for user {current_user.email}: {e}")
+        db.session.rollback()
+        flash('An error occurred while deleting your account. Please try again.', 'error')
+        return redirect(url_for('dashboard'))
     
 @app.route('/dashboard')
 @login_required
@@ -91,12 +145,16 @@ def dashboard():
 @app.route('/login/google')
 @login_required
 def google_login():
-    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+    # No longer needed with ProxyFix and production HTTPS
+    # os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1" 
     flow = Flow.from_client_secrets_file(
         'client_secret.json',
         scopes=['https://www.googleapis.com/auth/gmail.readonly'],
         redirect_uri=url_for('oauth2callback', _external=True))
-    authorization_url, state = flow.authorization_url(access_type='offline', include_granted_scopes='true')
+    authorization_url, state = flow.authorization_url(
+        access_type='offline',
+        prompt='consent'
+    )
     session['state'] = state
     return redirect(authorization_url)
 
@@ -107,8 +165,19 @@ def oauth2callback():
     flow = Flow.from_client_secrets_file(
         'client_secret.json', scopes=['https://www.googleapis.com/auth/gmail.readonly'],
         state=state, redirect_uri=url_for('oauth2callback', _external=True))
+
+    logging.warning(f"Request URL from Google: {request.url}")
+    
     flow.fetch_token(authorization_response=request.url)
     credentials = flow.credentials
+
+    logging.warning("--- Google OAuth Callback Data ---")
+    logging.warning(f"Token: {credentials.token}")
+    logging.warning(f"Refresh Token: {credentials.refresh_token}")
+    logging.warning(f"Scopes: {credentials.scopes}")
+    
+    cred_dict = credentials_to_dict(credentials)
+    logging.warning(f"Credentials dictionary to be stored: {json.dumps(cred_dict)}")
 
     service = build('gmail', 'v1', credentials=credentials)
     profile = service.users().getProfile(userId='me').execute()
@@ -118,14 +187,14 @@ def oauth2callback():
     existing_account = LinkedAccount.query.filter_by(email_address=email_address, user_id=current_user.id).first() # type: ignore
     if existing_account:
         # Update credentials
-        existing_account.credentials = json.dumps(credentials_to_dict(credentials))
+        existing_account.credentials = json.dumps(cred_dict)
     else:
         # Create new linked account
         new_account = LinkedAccount(
             user_id=current_user.id, # type: ignore
             email_address=email_address, # type: ignore
             provider="gmail", # type: ignore
-            credentials=json.dumps(credentials_to_dict(credentials)) # type: ignore
+            credentials=json.dumps(cred_dict) # type: ignore
         )
         db.session.add(new_account)
     
@@ -176,7 +245,7 @@ def update_account():
 
 @app.route('/api/accounts/delete', methods=['POST'])
 @login_required
-def delete_account():
+def delete_linked_account():
     data = request.get_json() or {}
     email = data.get('email_address')
     account = LinkedAccount.query.filter_by(email_address=email, user_id=current_user.id).first_or_404() # type: ignore
@@ -199,42 +268,36 @@ def test_connection():
         return jsonify({"status": "ERROR", "message": str(e)}), 500
 
 # --- API Endpoints for Scanning & Results ---
-@app.route('/api/results', methods=['POST'])
+@app.route('/api/unsubscribe_links', methods=['GET'])
 @login_required
-def get_results():
-    email_address = request.json.get('email_address')
-    account = LinkedAccount.query.filter_by(email_address=email_address, user_id=current_user.id).first_or_404() # type: ignore
-    
-    links = json.loads(account.scan_results) if account.scan_results else {}
-    history = json.loads(account.scan_history) if account.scan_history else []
-    
-    return jsonify({'links': links, 'scan_history': history})
-
-@app.route('/api/unsubscribed', methods=['POST'])
-@login_required
-def get_unsubscribed_links():
-    email_address = request.json.get('email_address')
-    account = LinkedAccount.query.filter_by(email_address=email_address, user_id=current_user.id).first_or_404() # type: ignore
-    
-    log = json.loads(account.unsubscribed_log) if account.unsubscribed_log else {}
-    return jsonify(log.get(email_address, {}))
+def get_unsubscribe_links():
+    """Fetches all persisted unsubscribe links for the current user."""
+    links = UnsubscribeLink.query.filter_by(user_id=current_user.id).order_by(UnsubscribeLink.list_name).all()
+    return jsonify([
+        {
+            "list_name": link.list_name, 
+            "unsubscribe_url": link.unsubscribe_url, 
+            "added_at": link.added_at.isoformat(),
+            "unsubscribed": link.unsubscribed
+        }
+        for link in links
+    ])
 
 @app.route('/api/unsubscribe', methods=['POST'])
 @login_required
 def log_unsubscribe():
+    """Marks a specific unsubscribe link as actioned."""
     data = request.json
-    email_address = data.get('email_address')
     link_href = data.get('href')
-    account = LinkedAccount.query.filter_by(email_address=email_address, user_id=current_user.id).first_or_404() # type: ignore
+    if not link_href:
+        return jsonify({"status": "ERROR", "message": "Link href is required."}), 400
 
-    logs = json.loads(account.unsubscribed_log) if account.unsubscribed_log else {}
-    if email_address not in logs:
-        logs[email_address] = {}
+    link = UnsubscribeLink.query.filter_by(user_id=current_user.id, unsubscribe_url=link_href).first()
+
+    if not link:
+        return jsonify({"status": "ERROR", "message": "Link not found."}), 404
         
-    logs[email_address][link_href] = {
-        "unsubscribed_date": datetime.datetime.utcnow().isoformat()
-    }
-    account.unsubscribed_log = json.dumps(logs)
+    link.unsubscribed = True
     db.session.commit()
     return jsonify({"status": "OK"})
 
@@ -244,10 +307,11 @@ def scan():
     email_address = request.args.get('email_address')
     num_emails_str = request.args.get('num_emails')
     since_date_str = request.args.get('since_date')
+    user_id = current_user.id # Get user_id while request context is active
     
-    account = LinkedAccount.query.filter_by(email_address=email_address, user_id=current_user.id).first_or_404() # type: ignore
+    account = LinkedAccount.query.filter_by(email_address=email_address, user_id=user_id).first_or_404() # type: ignore
 
-    def generate_scan_progress():
+    def generate_scan_progress(scan_user_id):
         with app.app_context():
             try:
                 creds_dict = json.loads(account.credentials) if account.credentials else {}
@@ -270,47 +334,55 @@ def scan():
                     scan_params['num_emails'] = int(num_emails_str)
                 if since_date_str:
                     scan_params['since_date'] = since_date_str
-
-                existing_results = json.loads(account.scan_results) if account.scan_results else {}
                 
-                total_new_links = 0
                 for progress_update in client.scan_emails(**scan_params):
                     if not isinstance(progress_update, dict):
                         logging.warning(f"Received non-dict progress update: {progress_update}")
                         continue
 
-                    if 'links' in progress_update: # Final update
-                        new_links = progress_update.get('links', {})
-                        # Merge results
-                        for domain, links_list in new_links.items():
-                            if domain not in existing_results:
-                                existing_results[domain] = []
-                            
-                            existing_hrefs = {link['href'] for link in existing_results[domain]}
-                            for link in links_list:
-                                if link['href'] not in existing_hrefs:
-                                    existing_results[domain].append(link)
-                                    total_new_links +=1
-                        
-                        account.scan_results = json.dumps(existing_results)
+                    if 'links' in progress_update: # Final summary update from scanner
+                        new_links_payload = progress_update.get('links', {})
+                        newly_added_count = 0
 
-                        # Update scan history
-                        history = json.loads(account.scan_history) if account.scan_history else []
-                        scan_entry = {
-                            "scan_date": datetime.datetime.utcnow().isoformat(),
-                            "description": progress_update.get("description"),
-                            "date_range": progress_update.get("date_range"),
-                            "new_links_found": total_new_links
+                        # Get all existing URLs for the user to prevent duplicates efficiently
+                        existing_urls = {link.unsubscribe_url for link in UnsubscribeLink.query.filter_by(user_id=scan_user_id).all()}
+
+                        for domain, links_list in new_links_payload.items():
+                            for link_info in links_list:
+                                url = link_info['href']
+                                if url not in existing_urls:
+                                    new_link = UnsubscribeLink(
+                                        user_id=scan_user_id,
+                                        list_name=link_info.get('from', domain), # Prefer specific 'from', fallback to domain
+                                        unsubscribe_url=url
+                                    )
+                                    db.session.add(new_link)
+                                    existing_urls.add(url) # Add to set to handle duplicates within same scan
+                                    newly_added_count += 1
+                        
+                        if newly_added_count > 0:
+                            db.session.commit()
+                        
+                        # After processing, query all links to send to frontend as the final list
+                        all_user_links = UnsubscribeLink.query.filter_by(user_id=scan_user_id).order_by(UnsubscribeLink.list_name).all()
+                        
+                        final_data = {
+                            "status": "completed",
+                            "description": progress_update.get("description", f"Scan complete."),
+                             "date_range": progress_update.get("date_range"),
+                            "new_links_found": newly_added_count,
+                            "links": [
+                                {
+                                    "list_name": l.list_name, 
+                                    "unsubscribe_url": l.unsubscribe_url,
+                                    "added_at": l.added_at.isoformat(),
+                                    "unsubscribed": l.unsubscribed
+                                } for l in all_user_links
+                            ]
                         }
-                        history.append(scan_entry)
-                        account.scan_history = json.dumps(history)
-                        
-                        db.session.commit()
-                        
-                        progress_update['links'] = existing_results
-                        progress_update['scan_history'] = history
-                        yield f"data: {json.dumps(progress_update)}\n\n"
+                        yield f"data: {json.dumps(final_data)}\n\n"
                     else:
+                        # It's a progress update, just forward it
                         yield f"data: {json.dumps(progress_update)}\n\n"
                 
                 client.logout()
@@ -319,7 +391,7 @@ def scan():
                 logging.error(f"Error during scan for {email_address}: {e}", exc_info=True)
                 yield f'data: {json.dumps({"error": str(e)})}\n\n'
 
-    return Response(generate_scan_progress(), mimetype='text/event-stream')
+    return Response(generate_scan_progress(user_id), mimetype='text/event-stream')
 
 def run():
     with app.app_context():
