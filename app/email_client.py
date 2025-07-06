@@ -22,7 +22,7 @@ class EmailProvider(ABC):
         self.email_address = email_address
         self.password = password
         self.imap_server = imap_server
-        self.mail = None
+        self.mail: imaplib.IMAP4_SSL | None = None
 
     @abstractmethod
     def connect(self) -> tuple[str, str]:
@@ -50,7 +50,7 @@ class EmailProvider(ABC):
             logging.info("No previous UID found, scanning all emails.")
 
         # We need to fetch UIDs, not message sequence numbers
-        status, messages = self.mail.uid('search', None, search_criteria)
+        status, messages = self.mail.uid('search', None, search_criteria) # type: ignore
         if status != 'OK' or not messages or not messages[0]:
             logging.warning("Failed to retrieve emails or no emails found for the new criteria.")
             return "ERROR", "Failed to retrieve emails or no emails found.", {}, None
