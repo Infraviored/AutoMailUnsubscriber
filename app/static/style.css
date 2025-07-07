@@ -317,6 +317,26 @@ button:disabled {
 .scan-button-container button {
     width: 100%;
 }
+.scan-button-container button:disabled {
+    color: #121212; /* Dark text for high contrast on green background */
+    font-weight: bold;
+}
+.scan-progress-details {
+    flex-basis: 100%;
+    text-align: center;
+    font-size: 0.9em;
+    color: #a0a0a0;
+    margin-top: 15px;
+    padding: 10px;
+    background-color: #1e1e1e;
+    border: 1px dashed #333;
+    border-radius: 6px;
+    min-height: 1.2em;
+    display: none; /* Hidden by default, shown by JS */
+}
+.scan-progress-details i {
+    color: #c9d1d9;
+}
 
 /* --- Dashboard: Results & History --- */
 .results-header {

@@ -201,8 +201,8 @@
                 </div>
                 <div class="scan-button-container">
                     <button id="scan-btn-${safeEmailId}">Scan ${email}</button>
-                    <div id="status-${safeEmailId}" class="status-message"></div>
                 </div>
+                <div id="status-${safeEmailId}" class="scan-progress-details"></div>
             </div>
             <hr class="separator">
             <div class="results-header">
@@ -334,8 +334,8 @@
                 const percentage = (data.progress / data.total) * 100;
                 scanButton.style.background = `linear-gradient(to right, #4CAF50 ${percentage}%, #ddd ${percentage}%)`;
                 scanButton.textContent = `Scanning... (${data.progress}/${data.total})`;
-                const subjectText = data.current_email_subject ? `: ${data.current_email_subject}` : '';
-                updateStatus(statusDiv.id, `Processing${subjectText}`, false);
+                const subjectText = data.current_email_subject ? data.current_email_subject : '...';
+                updateStatus(statusDiv.id, `Processing: <i>${escapeHTML(subjectText)}</i>`, false);
             }
         };
 
@@ -348,9 +348,12 @@
     }
 
     function resetScanButton(scanButton, email) {
+        const safeEmailId = email.replace(/[@.]/g, '-');
+        const statusDiv = document.getElementById(`status-${safeEmailId}`);
         scanButton.disabled = false;
         scanButton.style.background = '';
         scanButton.textContent = `Scan ${email}`;
+        updateStatus(statusDiv.id, '', false); // Clear status
     }
 
     async function handleUnsubscribe(linkUrl, email) {
@@ -590,8 +593,13 @@
     function updateStatus(elementId, message, isError) {
         const statusDiv = document.getElementById(elementId);
         if (statusDiv) {
-            statusDiv.textContent = message;
+            statusDiv.innerHTML = message;
             statusDiv.className = `status-message ${isError ? 'error' : 'success'}`;
+            if (message) {
+                statusDiv.style.display = 'block';
+            } else {
+                statusDiv.style.display = 'none';
+            }
         }
     }
     

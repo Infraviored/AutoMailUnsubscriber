@@ -10,4 +10,4 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "app.web_server:app"] 
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--timeout", "600", "app.web_server:app"] 
