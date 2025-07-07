@@ -402,6 +402,16 @@ td:last-child, th:last-child {
 .results-table .col-subject { width: 40%; }
 .results-table .col-link { width: 30%; }
 .results-table .col-action { width: 15%; text-align: center; }
+.col-unsub-icon {
+    text-align: center;
+    cursor: pointer;
+}
+.col-unsub-icon .fa-regular {
+    color: #8b949e;
+}
+.col-unsub-icon .fa-solid {
+    color: #2ea043;
+}
 .action-btn {
     /* existing styles */
 }
@@ -411,6 +421,12 @@ tr.unsubscribed-row td {
 }
 tr.unsubscribed-row a {
     color: #555;
+}
+tr.warning-row {
+    background-color: rgba(248, 140, 73, 0.1); /* A soft orange/yellow */
+}
+tr.warning-row:hover {
+    background-color: rgba(248, 140, 73, 0.2);
 }
 
 /* --- Modal --- */

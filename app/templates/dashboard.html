@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard - unsubmy.email</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 </head>
 <body>
     <header class="main-header">
@@ -355,11 +356,11 @@
     async function handleUnsubscribe(linkUrl, email) {
         const accountLinks = unsubscribeLinks[email] || [];
         const link = accountLinks.find(l => l.unsubscribe_url === linkUrl);
-        if (!link || link.unsubscribed) return;
+        if (!link) return; // Allow toggling
 
-        link.unsubscribed = true;
-        link.unsubscribed_at = new Date().toISOString();
-        renderResults();
+        link.unsubscribed = !link.unsubscribed; // Toggle state
+        link.unsubscribed_at = link.unsubscribed ? new Date().toISOString() : null;
+        renderResults(); // Re-render to show the change immediately
 
         try {
             await fetch('/api/unsubscribe', {
@@ -367,11 +368,13 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ href: linkUrl })
             });
-            await fetchUnsubscribeLinks(); // Re-fetch to get server-confirmed data
-            renderResults();
+            // Optional: re-fetch to confirm, but optimistic update is faster
+            // await fetchUnsubscribeLinks(); 
+            // renderResults();
         } catch (error) {
             console.error('Failed to mark link as unsubscribed:', error);
-            link.unsubscribed = false; // Revert on failure
+            // Revert on failure
+            link.unsubscribed = !link.unsubscribed;
             link.unsubscribed_at = null;
             renderResults();
         }
@@ -426,15 +429,38 @@
             
             const linksForDomain = linksByDomain[domain];
             
+            // --- Domain Status Logic ---
+            let latestUnsubscribeDate = null;
+            linksForDomain.forEach(link => {
+                if (link.unsubscribed_at) {
+                    const unsubDate = new Date(link.unsubscribed_at);
+                    if (!latestUnsubscribeDate || unsubDate > latestUnsubscribeDate) {
+                        latestUnsubscribeDate = unsubDate;
+                    }
+                }
+            });
+
+            let domainStatusIcon = '<i class="fa-regular fa-square status-icon unsub-none"></i>';
+            let domainStatusText = '';
+            let hasWarning = false;
+
+            if (latestUnsubscribeDate) {
+                hasWarning = linksForDomain.some(link => !link.unsubscribed && new Date(link.added_at) > latestUnsubscribeDate);
+                domainStatusIcon = hasWarning
+                    ? '<i class="fa-solid fa-triangle-exclamation status-icon unsub-failed"></i>'
+                    : '<i class="fa-solid fa-square-check status-icon unsub-ok"></i>';
+                domainStatusText = ` - unsubbed: ${latestUnsubscribeDate.toLocaleDateString()}`;
+            }
+
             domainBlock.innerHTML = `
-                <h3 class="domain-title">${escapeHTML(domain)} (${linksForDomain.length} found)</h3>
+                <h3 class="domain-title">${domainStatusIcon} ${escapeHTML(domain)} (${linksForDomain.length} found)${domainStatusText}</h3>
                 <table class="results-table">
                     <thead>
                         <tr>
                             <th class="col-date">Received on</th>
                             <th class="col-subject">Mail subject</th>
-                            <th class="col-link">Link Text</th>
-                            <th class="col-action">Action</th>
+                            <th class="col-link">Unsub Link</th>
+                            <th class="col-action">Unsubbed</th>
                         </tr>
                     </thead>
                     <tbody></tbody>
@@ -444,22 +470,33 @@
             linksForDomain
                 .sort((a, b) => new Date(b.added_at) - new Date(a.added_at))
                 .forEach(linkData => {
+                    const isNewerMailWarning = latestUnsubscribeDate && !linkData.unsubscribed && new Date(linkData.added_at) > latestUnsubscribeDate;
                     const tr = document.createElement('tr');
-                    tr.className = linkData.unsubscribed ? 'unsubscribed-row' : '';
+                    tr.className = linkData.unsubscribed ? 'unsubscribed-row' : (isNewerMailWarning ? 'warning-row' : '');
                     
+                    const unsubIcon = linkData.unsubscribed 
+                        ? '<i class="fa-solid fa-square-check unsub-ok"></i>' 
+                        : '<i class="fa-regular fa-square unsub-none"></i>';
+
                     tr.innerHTML = `
-                        <td>${new Date(linkData.added_at).toLocaleDateString()}</td>
+                        <td>${new Date(linkData.added_at).toLocaleDateString()} ${isNewerMailWarning ? '<i class="fa-solid fa-triangle-exclamation warning-icon" title="This email was received after you unsubscribed from this sender."></i>' : ''}</td>
                         <td>${escapeHTML(linkData.subject || 'No Subject')}</td>
-                        <td><a href="${linkData.unsubscribe_url}" target="_blank" rel="noopener noreferrer" title="${linkData.unsubscribe_url}">${escapeHTML(linkData.link_text || 'Unsubscribe')}</a></td>
-                        <td>
-                            <button class="action-btn" data-link-url="${linkData.unsubscribe_url}" ${linkData.unsubscribed ? 'disabled' : ''}>
-                                ${linkData.unsubscribed ? 'Done' : 'Unsubscribe'}
-                            </button>
-                        </td>`;
+                        <td><a class="unsub-link-anchor" href="${linkData.unsubscribe_url}" target="_blank" rel="noopener noreferrer" title="${linkData.unsubscribe_url}">${escapeHTML(linkData.link_text || 'Unsubscribe')}</a></td>
+                        <td class="col-unsub-icon">${unsubIcon}</td>`;
                     
-                    tr.querySelector('.action-btn').addEventListener('click', (e) => {
-                        handleUnsubscribe(e.target.dataset.linkUrl, currentEmail);
+                    // Event listener for the icon
+                    tr.querySelector('.col-unsub-icon').addEventListener('click', () => {
+                        handleUnsubscribe(linkData.unsubscribe_url, currentEmail);
                     });
+
+                    // Event listener for the link itself
+                    tr.querySelector('.unsub-link-anchor').addEventListener('click', () => {
+                        // Only mark as unsubscribed, don't toggle back
+                        if (!linkData.unsubscribed) {
+                            handleUnsubscribe(linkData.unsubscribe_url, currentEmail);
+                        }
+                    });
+
                     tbody.appendChild(tr);
                 });
             resultsContainer.appendChild(domainBlock);
