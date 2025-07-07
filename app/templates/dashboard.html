@@ -401,18 +401,9 @@
             return;
         }
 
-        const unsubscribedCount = currentAccountLinks.filter(l => l.unsubscribed).length;
         const dates = currentAccountLinks.map(l => new Date(l.added_at));
         const minDate = new Date(Math.min.apply(null, dates));
         const maxDate = new Date(Math.max.apply(null, dates));
-
-        summaryContainer.innerHTML = `
-            <div class="summary-box">
-                <h4>List of Newsletters for ${escapeHTML(currentEmail)}</h4>
-                <p>Date Range: ${minDate.toLocaleDateString()} - ${maxDate.toLocaleDateString()}</p>
-                <p>Unsubscribed: <strong>${unsubscribedCount} of ${currentAccountLinks.length}</strong></p>
-            </div>
-        `;
 
         const linksByDomain = {};
         currentAccountLinks.forEach(link => {
@@ -422,6 +413,22 @@
             }
             linksByDomain[domain].push(link);
         });
+        
+        const totalDomains = Object.keys(linksByDomain).length;
+        let unsubscribedDomains = 0;
+        Object.values(linksByDomain).forEach(links => {
+            if (links.some(l => l.unsubscribed)) {
+                unsubscribedDomains++;
+            }
+        });
+
+        summaryContainer.innerHTML = `
+            <div class="summary-box">
+                <h4>List of Newsletters for ${escapeHTML(currentEmail)}</h4>
+                <p>Date Range: ${minDate.toLocaleDateString()} - ${maxDate.toLocaleDateString()}</p>
+                <p>Unsubscribed: <strong>${unsubscribedDomains} of ${totalDomains} Mailing Lists</strong></p>
+            </div>
+        `;
 
         const domains = Object.keys(linksByDomain).sort();
         resultsContainer.innerHTML = '';
