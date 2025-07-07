@@ -101,11 +101,12 @@
     </div>
 
 <script>
-    // Global state
-    let accounts = {};
-    let unsubscribedLogs = {};
+    // --- Global State ---
+    let accounts = [];
+    let unsubscribeLinks = {}; // Changed to an object, keyed by email
+    let currentEmail = null; // The email of the currently active tab
 
-    // DOM Elements
+    // --- DOM Elements ---
     const tabsContainer = document.getElementById('tabs');
     const tabContentsContainer = document.getElementById('tab-contents');
     const addAccountTab = document.getElementById('tab-add-account');
@@ -114,79 +115,58 @@
     async function initialize() {
         setupEventListeners();
         
-        const response = await fetch('/api/accounts');
-        const safeAccounts = await response.json();
+        await Promise.all([ fetchAccounts(), fetchUnsubscribeLinks() ]);
         
-        accounts = safeAccounts;
+        accounts.forEach(account => createAccountTab(account.email_address, false));
 
-        // Add existing accounts from the safe list
-        for (const email in safeAccounts) {
-            await createAccountTab(email);
-        }
-        
-        const firstAccount = Object.keys(safeAccounts)[0] || 'add-account';
-        if (document.getElementById(`tab-${firstAccount.replace(/[@.]/g, '-')}`)) {
-            switchTab(firstAccount);
-        } else {
-            switchTab('add-account');
-        }
+        const firstAccountEmail = accounts.length > 0 ? accounts[0].email_address : 'add-account';
+        switchTab(firstAccountEmail);
     }
 
     function setupEventListeners() {
         document.getElementById('add-provider').addEventListener('change', () => {
             const provider = document.getElementById('add-provider').value;
-            const isGmail = provider === 'gmail';
-            const isOther = provider === 'other';
-
-            document.getElementById('add-form-gmail').style.display = isGmail ? 'block' : 'none';
-            document.getElementById('add-form-other').style.display = isGmail ? 'none' : 'block';
-            document.getElementById('add-imap-container').style.display = isOther ? 'block' : 'none';
+            document.getElementById('add-form-gmail').style.display = provider === 'gmail' ? 'block' : 'none';
+            document.getElementById('add-form-other').style.display = provider === 'gmail' ? 'none' : 'block';
+            document.getElementById('add-imap-container').style.display = provider === 'other' ? 'block' : 'none';
         });
 
-        document.getElementById('google-signin-btn').addEventListener('click', () => {
-            window.location.href = '/login/google';
-        });
-
+        document.getElementById('google-signin-btn').addEventListener('click', () => { window.location.href = '/login/google'; });
         document.getElementById('add-account-btn').addEventListener('click', handleAddAccount);
         document.getElementById('add-test-btn').addEventListener('click', () => handleTestConnection('add'));
         document.getElementById('modal-close-btn').addEventListener('click', closeModal);
-        window.addEventListener('click', (event) => {
-            if (event.target == document.getElementById('edit-account-modal')) {
-                closeModal();
-            }
-        });
-
-        // Event listeners for new user settings modal
         document.getElementById('account-settings-link').addEventListener('click', openUserSettingsModal);
         document.getElementById('user-settings-close-btn').addEventListener('click', closeUserSettingsModal);
+
         window.addEventListener('click', (event) => {
-            if (event.target == document.getElementById('user-settings-modal')) {
-                closeUserSettingsModal();
-            }
+            if (event.target == document.getElementById('edit-account-modal')) closeModal();
+            if (event.target == document.getElementById('user-settings-modal')) closeUserSettingsModal();
         });
     }
 
     // ---- Tab and Content Management ----
     function switchTab(email) {
+        currentEmail = email;
         document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
         document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
         
         const safeEmailId = email.replace(/[@.]/g, '-');
         document.getElementById(`tab-${safeEmailId}`).classList.add('active');
         document.getElementById(`content-${safeEmailId}`).classList.add('active');
+
+        if (email !== 'add-account') {
+            renderResults();
+        }
     }
 
-    async function createAccountTab(email) {
+    function createAccountTab(email, setActive = true) {
         const safeEmailId = email.replace(/[@.]/g, '-');
+        if (document.getElementById(`tab-${safeEmailId}`)) return;
 
-        // 1. Create Tab
         const tab = document.createElement('div');
         tab.className = 'tab';
         tab.id = `tab-${safeEmailId}`;
-        tab.innerHTML = `
-            <span class="tab-text">${email}</span>
-            <span class="settings-icon">&#9881;</span>
-        `;
+        tab.innerHTML = `<span class="tab-text">${email}</span><span class="settings-icon">&#9881;</span>`;
         tabsContainer.insertBefore(tab, addAccountTab);
         
         tab.querySelector('.tab-text').addEventListener('click', () => switchTab(email));
@@ -195,49 +175,42 @@
             openEditModal(email);
         });
 
-        // 2. Create Content Pane
         const content = document.createElement('div');
         content.className = 'tab-content';
         content.id = `content-${safeEmailId}`;
+        const account = accounts.find(acc => acc.email_address === email);
+        const supportsDateScan = account && account.provider === 'gmail';
+
         content.innerHTML = `
             <div class="scan-controls">
                 <div>
                     <label for="scan-type-${safeEmailId}">Scan by:</label>
                     <select id="scan-type-${safeEmailId}">
                         <option value="number">Number of recent emails</option>
-                        <option value="date">Emails since a specific date</option>
+                        ${supportsDateScan ? '<option value="date">Emails since a specific date</option>' : ''}
                     </select>
                 </div>
                 <div id="scan-by-number-${safeEmailId}">
                     <label for="num-emails-${safeEmailId}">Number of emails:</label>
-                    <input type="number" id="num-emails-${safeEmailId}" value="100" min="1">
+                    <input type="number" id="num-emails-${safeEmailId}" value="100" min="1" max="1000">
                 </div>
                 <div id="scan-by-date-${safeEmailId}" style="display:none;">
                     <label for="since-date-${safeEmailId}">Scan since:</label>
                     <input type="date" id="since-date-${safeEmailId}">
                 </div>
                 <div class="scan-button-container">
-                    <button id="scan-btn-${safeEmailId}">Scan Now</button>
+                    <button id="scan-btn-${safeEmailId}">Scan ${email}</button>
                     <div id="status-${safeEmailId}" class="status-message"></div>
                 </div>
             </div>
-            <div class="scan-history-container" id="history-container-${safeEmailId}">
-                <h4>Scan History</h4>
-                <div id="history-list-${safeEmailId}"></div>
-            </div>
-
             <hr class="separator">
-
             <div class="results-header">
                 <h2>Unsubscription List</h2>
                 <div class="results-summary" id="summary-${safeEmailId}"></div>
             </div>
-
-            <div id="results-${safeEmailId}" class="results-container"></div>
-        `;
+            <div id="results-${safeEmailId}" class="results-container"></div>`;
         tabContentsContainer.appendChild(content);
 
-        // Event listener for the new dropdown
         document.getElementById(`scan-type-${safeEmailId}`).addEventListener('change', (e) => {
             const scanType = e.target.value;
             document.getElementById(`scan-by-number-${safeEmailId}`).style.display = scanType === 'number' ? 'block' : 'none';
@@ -246,32 +219,48 @@
 
         document.getElementById(`scan-btn-${safeEmailId}`).onclick = () => handleScan(email);
         
-        // 3. Fetch and Render Initial Data
-        await fetchUnsubscribedLog(email);
-        const response = await fetch('/api/results', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email_address: email })
-        });
-        const data = await response.json();
-        renderResults(email, data);
+        if (setActive) switchTab(email);
     }
 
-    // ---- API Calls and Handlers ----
+    // ---- API Calls and Data Handlers ----
+    async function fetchAccounts() {
+        try {
+            const response = await fetch('/api/accounts');
+            console.log('Response from /api/accounts:', response);
+            const data = await response.json();
+            console.log('Parsed accounts data:', data);
+            accounts = data;
+        } catch (error) {
+            console.error('Error fetching accounts:', error);
+            accounts = []; // Ensure accounts is an array on error
+        }
+    }
+
+    async function fetchUnsubscribeLinks() {
+        try {
+            const allLinks = await (await fetch('/api/unsubscribe_links')).json();
+            // Reset and group links by account email
+            unsubscribeLinks = {};
+            accounts.forEach(acc => { unsubscribeLinks[acc.email_address] = []; });
+            allLinks.forEach(link => {
+                if (unsubscribeLinks[link.email_address]) {
+                    unsubscribeLinks[link.email_address].push(link);
+                }
+            });
+        } catch (error) {
+            console.error('Error fetching unsubscribe links:', error);
+            unsubscribeLinks = {};
+        }
+    }
+    
     async function handleAddAccount() {
         const provider = document.getElementById('add-provider').value;
-        if (provider === 'gmail') {
-            // Gmail accounts are added via OAuth redirect, not this form.
-            return;
-        }
+        if (provider === 'gmail') return;
 
         const email = document.getElementById('add-email').value;
         const password = document.getElementById('add-password').value;
         const imap_server = document.getElementById('add-imap_server').value;
-        
-        if (!email || !password) {
-            return updateStatus('add-account-status', 'Email and password are required.', true);
-        }
+        if (!email || !password) return updateStatus('add-account-status', 'Email and password are required.', true);
 
         const payload = { email_address: email, password, provider, imap_server };
         updateStatus('add-account-status', 'Saving...', false);
@@ -285,14 +274,9 @@
         updateStatus('add-account-status', result.message, !response.ok);
 
         if (response.ok) {
-            accounts[email] = { provider, imap_server }; // Store locally
-            await createAccountTab(email);
-            switchTab(email);
-            // Reset form
-            document.getElementById('add-email').value = '';
-            document.getElementById('add-password').value = '';
-            document.getElementById('add-imap_server').value = '';
-            document.getElementById('add-account-status').textContent = '';
+            await fetchAccounts();
+            createAccountTab(email, true);
+            ['add-email', 'add-password', 'add-imap_server', 'add-account-status'].forEach(id => document.getElementById(id).value = '');
         }
     }
 
@@ -304,18 +288,13 @@
         const scanType = document.getElementById(`scan-type-${safeEmailId}`).value;
         let scanParams = '';
         if (scanType === 'number') {
-            const numEmails = document.getElementById(`num-emails-${safeEmailId}`).value;
-            scanParams = `num_emails=${numEmails}`;
+            scanParams = `num_emails=${document.getElementById(`num-emails-${safeEmailId}`).value}`;
         } else {
             const sinceDate = document.getElementById(`since-date-${safeEmailId}`).value;
-            if (!sinceDate) {
-                updateStatus(statusDiv.id, 'Please select a date.', true);
-                return;
-            }
+            if (!sinceDate) return updateStatus(statusDiv.id, 'Please select a date.', true);
             scanParams = `since_date=${sinceDate}`;
         }
 
-        // --- UI Transformation for Progress ---
         scanButton.disabled = true;
         scanButton.style.background = 'linear-gradient(to right, #4CAF50 0%, #ddd 0%)';
         scanButton.textContent = 'Starting...';
@@ -324,27 +303,32 @@
         const eventSource = new EventSource(`/scan?email_address=${encodeURIComponent(email)}&${scanParams}`);
 
         eventSource.onmessage = function(event) {
-            console.log("Received SSE event:", event.data); // DEBUG
             const data = JSON.parse(event.data);
 
             if (data.error) {
                 updateStatus(statusDiv.id, `Error: ${data.error}`, true);
                 eventSource.close();
-                resetScanButton(scanButton);
-                return;
+                return resetScanButton(scanButton, email);
             }
-
-            if (data.status === 'complete') {
-                updateStatus(statusDiv.id, "Scan complete. Processing results...", false);
+            
+            if (data.status === 'completed') {
+                updateStatus(statusDiv.id, `Scan complete! Found ${data.new_links_found} new links.`, false);
                 eventSource.close();
-                resetScanButton(scanButton);
-                // Final results rendering
-                renderResults(email, { links: data.links, scan_history: data.scan_history });
-                updateStatus(statusDiv.id, "Results loaded.", false);
+                resetScanButton(scanButton, email);
+
+                // Re-group all links from the final payload
+                unsubscribeLinks = {};
+                accounts.forEach(acc => { unsubscribeLinks[acc.email_address] = []; });
+                data.links.forEach(link => {
+                    if (unsubscribeLinks[link.email_address]) {
+                        unsubscribeLinks[link.email_address].push(link);
+                    }
+                });
+                
+                renderResults();
                 return;
             }
             
-            // This is the progress update part
             if (data.status === 'progress' && data.total > 0) {
                 const percentage = (data.progress / data.total) * 100;
                 scanButton.style.background = `linear-gradient(to right, #4CAF50 ${percentage}%, #ddd ${percentage}%)`;
@@ -356,63 +340,157 @@
 
         eventSource.onerror = function(err) {
             console.error("EventSource failed:", err);
-            updateStatus(statusDiv.id, 'An error occurred during scanning.', true);
+            updateStatus(statusDiv.id, 'An error occurred connecting to the scan service.', true);
             eventSource.close();
-            resetScanButton(scanButton);
+            resetScanButton(scanButton, email);
         };
     }
 
-    function resetScanButton(scanButton) {
+    function resetScanButton(scanButton, email) {
         scanButton.disabled = false;
-        scanButton.style.background = ''; // Reset to CSS default
-        scanButton.textContent = 'Scan Now';
+        scanButton.style.background = '';
+        scanButton.textContent = `Scan ${email}`;
+    }
+
+    async function handleUnsubscribe(linkUrl, email) {
+        const accountLinks = unsubscribeLinks[email] || [];
+        const link = accountLinks.find(l => l.unsubscribe_url === linkUrl);
+        if (!link || link.unsubscribed) return;
+
+        link.unsubscribed = true;
+        link.unsubscribed_at = new Date().toISOString();
+        renderResults();
+
+        try {
+            await fetch('/api/unsubscribe', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ href: linkUrl })
+            });
+            await fetchUnsubscribeLinks(); // Re-fetch to get server-confirmed data
+            renderResults();
+        } catch (error) {
+            console.error('Failed to mark link as unsubscribed:', error);
+            link.unsubscribed = false; // Revert on failure
+            link.unsubscribed_at = null;
+            renderResults();
+        }
+    }
+    
+    // ---- UI Rendering ----
+    function renderResults() {
+        if (!currentEmail || currentEmail === 'add-account') return;
+
+        const safeEmailId = currentEmail.replace(/[@.]/g, '-');
+        const resultsContainer = document.getElementById(`results-${safeEmailId}`);
+        const summaryContainer = document.getElementById(`summary-${safeEmailId}`);
+        if (!resultsContainer) return;
+
+        const currentAccountLinks = unsubscribeLinks[currentEmail] || [];
+
+        // --- New Summary Box Logic ---
+        if (currentAccountLinks.length === 0) {
+            summaryContainer.innerHTML = '<p>No unsubscribe links found for this account.</p>';
+            resultsContainer.innerHTML = '<p class="status-message">Run a scan to begin.</p>';
+            return;
+        }
+
+        const unsubscribedCount = currentAccountLinks.filter(l => l.unsubscribed).length;
+        const dates = currentAccountLinks.map(l => new Date(l.added_at));
+        const minDate = new Date(Math.min.apply(null, dates));
+        const maxDate = new Date(Math.max.apply(null, dates));
+
+        summaryContainer.innerHTML = `
+            <div class="summary-box">
+                <h4>List of Newsletters for ${escapeHTML(currentEmail)}</h4>
+                <p>Date Range: ${minDate.toLocaleDateString()} - ${maxDate.toLocaleDateString()}</p>
+                <p>Unsubscribed: <strong>${unsubscribedCount} of ${currentAccountLinks.length}</strong></p>
+            </div>
+        `;
+
+        const linksByDomain = {};
+        currentAccountLinks.forEach(link => {
+            const domain = link.list_name;
+            if (!linksByDomain[domain]) {
+                linksByDomain[domain] = [];
+            }
+            linksByDomain[domain].push(link);
+        });
+
+        const domains = Object.keys(linksByDomain).sort();
+        resultsContainer.innerHTML = '';
+
+        domains.forEach(domain => {
+            const domainBlock = document.createElement('div');
+            domainBlock.className = 'domain-block';
+            
+            const linksForDomain = linksByDomain[domain];
+            
+            domainBlock.innerHTML = `
+                <h3 class="domain-title">${escapeHTML(domain)} (${linksForDomain.length} found)</h3>
+                <table class="results-table">
+                    <thead>
+                        <tr>
+                            <th class="col-date">Received on</th>
+                            <th class="col-subject">Mail subject</th>
+                            <th class="col-link">Link Text</th>
+                            <th class="col-action">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>`;
+
+            const tbody = domainBlock.querySelector('tbody');
+            linksForDomain
+                .sort((a, b) => new Date(b.added_at) - new Date(a.added_at))
+                .forEach(linkData => {
+                    const tr = document.createElement('tr');
+                    tr.className = linkData.unsubscribed ? 'unsubscribed-row' : '';
+                    
+                    tr.innerHTML = `
+                        <td>${new Date(linkData.added_at).toLocaleDateString()}</td>
+                        <td>${escapeHTML(linkData.subject || 'No Subject')}</td>
+                        <td><a href="${linkData.unsubscribe_url}" target="_blank" rel="noopener noreferrer" title="${linkData.unsubscribe_url}">${escapeHTML(linkData.link_text || 'Unsubscribe')}</a></td>
+                        <td>
+                            <button class="action-btn" data-link-url="${linkData.unsubscribe_url}" ${linkData.unsubscribed ? 'disabled' : ''}>
+                                ${linkData.unsubscribed ? 'Done' : 'Unsubscribe'}
+                            </button>
+                        </td>`;
+                    
+                    tr.querySelector('.action-btn').addEventListener('click', (e) => {
+                        handleUnsubscribe(e.target.dataset.linkUrl, currentEmail);
+                    });
+                    tbody.appendChild(tr);
+                });
+            resultsContainer.appendChild(domainBlock);
+        });
     }
 
     // ---- Edit Modal Functions ----
     function openEditModal(email) {
-        const account = accounts[email];
-        if (!account) {
-            console.error("Account data not found for", email);
-            return;
-        }
+        const account = accounts.find(acc => acc.email_address === email);
+        if (!account) return;
+
         document.getElementById('edit-modal-title').textContent = `Edit Account: ${email}`;
         
         const isGmail = account.provider === 'gmail';
-
         const formContainer = document.getElementById('edit-form-container');
         formContainer.innerHTML = `
-            <input type="hidden" id="edit-email" value="${email}">
-            <label for="edit-provider">Provider</label>
-            <select id="edit-provider" ${isGmail ? 'disabled' : ''}>
-                <option value="gmail" ${account.provider === 'gmail' ? 'selected' : ''}>Gmail</option>
-                <option value="outlook" ${account.provider === 'outlook' ? 'selected' : ''}>Outlook</option>
-                <option value="other" ${account.provider === 'other' ? 'selected' : ''}>Other</option>
-            </select>
-            <div id="edit-password-section" style="display: ${isGmail ? 'none' : 'block'};">
+            <p>Provider: <strong>${account.provider}</strong></p>
+            ${isGmail ? '<p>No editable settings for Gmail accounts.</p>' : `
                 <label for="edit-password">New Password (leave blank to keep current)</label>
                 <input type="password" id="edit-password" placeholder="Enter new password">
-            </div>
-            <div id="edit-imap-section" style="display: ${account.provider === 'other' ? 'block' : 'none'};">
-                <label for="edit-imap_server">IMAP Server</label>
-                <input type="text" id="edit-imap_server" value="${account.imap_server || ''}">
-            </div>
-            <div class="button-group">
-                <button id="edit-update-btn">Update</button>
-                <button id="edit-delete-btn">Delete Account</button>
-            </div>
-            <div id="edit-status" class="status-message"></div>
-        `;
+                ${account.provider === 'other' ? `
+                    <label for="edit-imap_server">IMAP Server</label>
+                    <input type="text" id="edit-imap_server" value="${account.imap_server || ''}">` : ''}
+                <div class="button-group"><button id="edit-update-btn">Update</button></div>`}
+            <hr class="separator-light">
+            <div class="button-group"><button id="edit-delete-btn" class="btn-danger">Delete This Linked Account</button></div>
+            <div id="edit-status" class="status-message"></div>`;
 
-        if (!isGmail) {
-            document.getElementById('edit-provider').onchange = () => {
-                const provider = document.getElementById('edit-provider').value;
-                document.getElementById('edit-imap-section').style.display = provider === 'other' ? 'block' : 'none';
-            };
-        }
-        
-        document.getElementById('edit-update-btn').addEventListener('click', () => handleUpdateAccount(email));
+        const updateBtn = document.getElementById('edit-update-btn');
+        if (updateBtn) updateBtn.addEventListener('click', () => handleUpdateAccount(email));
         document.getElementById('edit-delete-btn').addEventListener('click', () => handleDeleteAccount(email));
-
         document.getElementById('edit-account-modal').style.display = 'flex';
     }
 
@@ -421,15 +499,14 @@
     }
 
     async function handleUpdateAccount(email) {
-        const password = document.getElementById('edit-password').value;
-        const provider = document.getElementById('edit-provider').value;
-        const imap_server = document.getElementById('edit-imap_server').value;
-        
-        let payload = { email_address: email, provider, imap_server };
-        if (password) {
-            payload.password = password;
-        }
+        const password = document.getElementById('edit-password')?.value;
+        const imapEl = document.getElementById('edit-imap_server');
+        const imap_server = imapEl ? imapEl.value : null;
 
+        let payload = { email_address: email };
+        if (password) payload.password = password;
+        if (imap_server !== null) payload.imap_server = imap_server;
+        
         const response = await fetch('/api/accounts/update', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -439,23 +516,19 @@
         const result = await response.json();
         updateStatus('edit-status', result.message, !response.ok);
         if (response.ok) {
-            // update local state
-            accounts[email].provider = provider;
-            accounts[email].imap_server = imap_server;
+            await fetchAccounts(); 
             setTimeout(closeModal, 1500);
         }
     }
 
     async function handleDeleteAccount(email) {
-        if (!confirm(`Are you sure you want to delete ${email} and all its data? This cannot be undone.`)) return;
+        if (!confirm(`Are you sure you want to delete the linked account ${email}? This will not delete any emails, but will remove it from this app.`)) return;
         
         await fetch('/api/accounts/delete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email_address: email })
         });
-
-        // Reload the page to reflect deletion
         window.location.reload();
     }
 
@@ -464,168 +537,16 @@
         const password = document.getElementById(`${context}-password`).value;
         const provider = document.getElementById(`${context}-provider`).value;
         const imap_server = document.getElementById(`${context}-imap_server`).value;
+        if (!email || !password) return updateStatus(`${context}-account-status`, 'Email and password are required.', true);
 
-        if (!email || !password) {
-            return updateStatus(`${context}-account-status`, 'Email and password are required.', true);
-        }
-
-        const payload = { email_address: email, password, provider, imap_server };
         updateStatus(`${context}-account-status`, 'Testing...', false);
-
         const response = await fetch('/api/test_connection', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({ email_address: email, password, provider, imap_server })
         });
         const result = await response.json();
         updateStatus(`${context}-account-status`, result.message, result.status !== 'OK');
-    }
-
-    async function fetchUnsubscribedLog(email) {
-        const response = await fetch('/api/unsubscribed', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ email_address: email })
-        });
-        unsubscribedLogs[email] = await response.json();
-    }
-
-    // ---- UI Rendering ----
-    function renderResults(email, data) {
-        const safeEmailId = email.replace(/[@.]/g, '-');
-        const resultsContainer = document.getElementById(`results-${safeEmailId}`);
-        const historyContainer = document.getElementById(`history-list-${safeEmailId}`);
-        const summaryContainer = document.getElementById(`summary-${safeEmailId}`);
-        const unsubscribed = unsubscribedLogs[email] || {};
-        
-        const lastScan = (data.scan_history && data.scan_history.length > 0) ? data.scan_history[data.scan_history.length - 1] : null;
-
-        // Render Scan History
-        if (data.scan_history && data.scan_history.length > 0) {
-            historyContainer.innerHTML = `
-                <ul>
-                    ${data.scan_history.slice(-5).reverse().map(scan => `
-                        <li>
-                            <strong>${new Date(scan.scan_date).toLocaleString()}:</strong>
-                            ${scan.description} ${scan.date_range} (${scan.new_links_found} new links found)
-                        </li>
-                    `).join('')}
-                </ul>
-            `;
-        } else {
-            historyContainer.innerHTML = '<p>No scans performed yet.</p>';
-        }
-
-        // Render Links & Summary
-        const links = data.links || {};
-        const allLinks = Object.values(links).flat();
-        const totalLinks = allLinks.length;
-        
-        let unsubscribedProviders = 0;
-        const domains = Object.keys(links);
-        domains.forEach(domain => {
-            if (links[domain].some(link => unsubscribed[link.href])) {
-                unsubscribedProviders++;
-            }
-        });
-
-        if (totalLinks > 0) {
-            const allDates = allLinks.map(l => new Date(l.date)).filter(d => !isNaN(d));
-            const minDate = new Date(Math.min.apply(null, allDates));
-            const maxDate = new Date(Math.max.apply(null, allDates));
-            summaryContainer.innerHTML = `
-                <p>
-                    Covering <strong>${totalLinks}</strong> links from <strong>${minDate.toLocaleDateString()}</strong> to <strong>${maxDate.toLocaleDateString()}</strong>.
-                    You have unsubscribed from <strong>${unsubscribedProviders} of ${domains.length}</strong> senders.
-                    Last updated: <strong>${lastScan ? new Date(lastScan.scan_date).toLocaleString() : 'N/A'}</strong>.
-                </p>
-            `;
-        } else {
-            summaryContainer.innerHTML = '';
-        }
-
-        if (domains.length === 0) {
-            resultsContainer.innerHTML = '<p class="status-message">No unsubscribe links found. Run a scan to begin.</p>';
-            return;
-        }
-
-        resultsContainer.innerHTML = ''; // Clear previous results
-        domains.sort().forEach(domain => {
-            const domainBlock = document.createElement('div');
-            domainBlock.className = 'domain-block';
-            
-            const linksForDomain = links[domain];
-            
-            // Find the latest unsubscribe date for this domain
-            let latestUnsubscribeDate = null;
-            linksForDomain.forEach(link => {
-                if (unsubscribed[link.href]) {
-                    const unsubDate = new Date(unsubscribed[link.href].unsubscribed_date);
-                    if (!latestUnsubscribeDate || unsubDate > latestUnsubscribeDate) {
-                        latestUnsubscribeDate = unsubDate;
-                    }
-                }
-            });
-
-            // Determine domain status icon
-            let statusIcon = '<span class="status-icon unsub-none">☐</span>'; // Not unsubscribed
-            let statusText = '';
-            if (latestUnsubscribeDate) {
-                const hasNewerMail = linksForDomain.some(link => !unsubscribed[link.href] && new Date(link.date) > latestUnsubscribeDate);
-                if (hasNewerMail) {
-                    statusIcon = '<span class="status-icon unsub-failed" title="New email received after unsubscribing.">❗️</span>'; // Failed
-                } else {
-                    statusIcon = '<span class="status-icon unsub-ok">✅</span>'; // OK
-                }
-                statusText = ` (Last unsubscribed: ${latestUnsubscribeDate.toLocaleDateString()})`;
-            }
-
-            domainBlock.innerHTML = `
-                <h3 class="domain-title">${statusIcon} ${domain} (${linksForDomain.length} links)${statusText}</h3>
-                <table>
-                    <thead><tr><th>Received</th><th>Subject</th><th>Link Text</th><th>Clicked</th></tr></thead>
-                    <tbody>
-                    </tbody>
-                </table>`;
-
-            const tbody = domainBlock.querySelector('tbody');
-            linksForDomain
-                .sort((a, b) => new Date(b.date) - new Date(a.date)) // Sort by most recent email first
-                 .forEach(linkData => {
-                    const tr = document.createElement('tr');
-                    const isUnsubscribed = unsubscribed[linkData.href];
-                    const emailDate = new Date(linkData.date);
-                    
-                    let warningIcon = '';
-                    if (latestUnsubscribeDate && !isUnsubscribed && emailDate > latestUnsubscribeDate) {
-                        warningIcon = '<span class="warning-icon" title="A new email was received after you unsubscribed from this sender.">❗️</span>';
-                    }
-
-                    tr.innerHTML = `
-                        <td>${emailDate.toLocaleDateString()} ${warningIcon}</td>
-                         <td>${linkData.subject || 'No Subject'}</td>
-                         <td><a href="${linkData.href}" target="_blank" rel="noreferrer noopener">${linkData.text}</a></td>
-                         <td class="clicked-mark">
-                             ${isUnsubscribed ? '✅' : ''}
-                         </td>
-                     `;
-                    tr.querySelector('a').addEventListener('click', async () => {
-                        // Mark as clicked immediately for better UX
-                        tr.querySelector('.clicked-mark').innerHTML = '✅';
-                        unsubscribed[linkData.href] = { unsubscribed_date: new Date().toISOString() }; // Update local state
-                        
-                        await fetch('/api/unsubscribe', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ email_address: email, href: linkData.href })
-                        });
-                        // Re-render to update the header status
-                        renderResults(email, data);
-                    });
-                    tbody.appendChild(tr);
-            });
-            resultsContainer.appendChild(domainBlock);
-        });
     }
 
     // ---- Utility Functions ----
@@ -636,15 +557,13 @@
             statusDiv.className = `status-message ${isError ? 'error' : 'success'}`;
         }
     }
-
-    // ---- User Settings Modal ----
-    function openUserSettingsModal() {
-        document.getElementById('user-settings-modal').style.display = 'flex';
+    
+    function escapeHTML(str) {
+        return str.replace(/[&<>'"]/g, tag => ({'&': '&amp;','<': '&lt;','>': '&gt;',"'": '&#39;','"': '&quot;'}[tag] || tag));
     }
 
-    function closeUserSettingsModal() {
-        document.getElementById('user-settings-modal').style.display = 'none';
-    }
+    function openUserSettingsModal() { document.getElementById('user-settings-modal').style.display = 'flex'; }
+    function closeUserSettingsModal() { document.getElementById('user-settings-modal').style.display = 'none'; }
 
     document.addEventListener('DOMContentLoaded', initialize);
 </script>

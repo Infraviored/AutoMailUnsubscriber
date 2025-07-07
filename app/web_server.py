@@ -1,6 +1,7 @@
 import os
 import json
 import datetime
+from datetime import timezone
 import logging
 from flask import Flask, render_template, jsonify, request, redirect, url_for, session, Response, flash
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
@@ -206,9 +207,14 @@ def oauth2callback():
 @login_required
 def get_accounts():
     accounts = LinkedAccount.query.filter_by(user_id=current_user.id).all()
-    safe_accounts = {
-        acc.email_address: {"provider": acc.provider, "imap_server": acc.imap_server} for acc in accounts
-    }
+    # The frontend expects a list of objects, not a dictionary.
+    safe_accounts = [
+        {
+            "email_address": acc.email_address, 
+            "provider": acc.provider, 
+            "imap_server": acc.imap_server
+        } for acc in accounts
+    ]
     return jsonify(safe_accounts)
 
 @app.route('/api/accounts', methods=['POST'])
@@ -237,8 +243,15 @@ def update_account():
     email = data.get('email_address')
     account = LinkedAccount.query.filter_by(email_address=email, user_id=current_user.id).first_or_404() # type: ignore
     
+    # Update password if provided
     if data.get('password'):
-        account.credentials = json.dumps({"password": data.get("password")}) # Encrypt this
+        # In a real app, you'd merge the JSON, not overwrite it.
+        # But for now, we only store the password for IMAP.
+        account.credentials = json.dumps({"password": data.get("password")})
+
+    # Update IMAP server if provided (for 'other' provider)
+    if data.get('imap_server') is not None:
+        account.imap_server = data.get('imap_server')
     
     db.session.commit()
     return jsonify({"status": "OK", "message": f"Account {email} updated."})
@@ -271,17 +284,22 @@ def test_connection():
 @app.route('/api/unsubscribe_links', methods=['GET'])
 @login_required
 def get_unsubscribe_links():
-    """Fetches all persisted unsubscribe links for the current user."""
-    links = UnsubscribeLink.query.filter_by(user_id=current_user.id).order_by(UnsubscribeLink.list_name).all()
-    return jsonify([
-        {
-            "list_name": link.list_name, 
-            "unsubscribe_url": link.unsubscribe_url, 
+    links = db.session.query(UnsubscribeLink, LinkedAccount.email_address).join(LinkedAccount, UnsubscribeLink.linked_account_id == LinkedAccount.id).filter(UnsubscribeLink.user_id == current_user.id).order_by(UnsubscribeLink.added_at.desc()).all()
+    
+    links_data = []
+    for link, email_address in links:
+        links_data.append({
+            "id": link.id,
+            "email_address": email_address,
+            "list_name": link.list_name,
+            "unsubscribe_url": link.unsubscribe_url,
             "added_at": link.added_at.isoformat(),
-            "unsubscribed": link.unsubscribed
-        }
-        for link in links
-    ])
+            "unsubscribed": link.unsubscribed,
+            "unsubscribed_at": link.unsubscribed_at.isoformat() if link.unsubscribed_at else None,
+            "subject": link.subject,
+            "link_text": link.link_text
+        })
+    return jsonify(links_data)
 
 @app.route('/api/unsubscribe', methods=['POST'])
 @login_required
@@ -298,6 +316,7 @@ def log_unsubscribe():
         return jsonify({"status": "ERROR", "message": "Link not found."}), 404
         
     link.unsubscribed = True
+    link.unsubscribed_at = datetime.datetime.now(timezone.utc)
     db.session.commit()
     return jsonify({"status": "OK"})
 
@@ -342,7 +361,7 @@ def scan():
 
                     if 'links' in progress_update: # Final summary update from scanner
                         new_links_payload = progress_update.get('links', {})
-                        newly_added_count = 0
+                        new_links_found = 0
 
                         # Get all existing URLs for the user to prevent duplicates efficiently
                         existing_urls = {link.unsubscribe_url for link in UnsubscribeLink.query.filter_by(user_id=scan_user_id).all()}
@@ -353,31 +372,39 @@ def scan():
                                 if url not in existing_urls:
                                     new_link = UnsubscribeLink(
                                         user_id=scan_user_id,
-                                        list_name=link_info.get('from', domain), # Prefer specific 'from', fallback to domain
-                                        unsubscribe_url=url
+                                        linked_account_id=account.id,
+                                        list_name=link_info.get('from', domain),
+                                        unsubscribe_url=url,
+                                        subject=link_info.get('subject'),
+                                        link_text=link_info.get('text'),
+                                        added_at=datetime.datetime.fromisoformat(link_info['date']) if link_info.get('date') else datetime.datetime.now(timezone.utc)
                                     )
                                     db.session.add(new_link)
                                     existing_urls.add(url) # Add to set to handle duplicates within same scan
-                                    newly_added_count += 1
+                                    new_links_found += 1
                         
-                        if newly_added_count > 0:
+                        if new_links_found > 0:
                             db.session.commit()
                         
-                        # After processing, query all links to send to frontend as the final list
-                        all_user_links = UnsubscribeLink.query.filter_by(user_id=scan_user_id).order_by(UnsubscribeLink.list_name).all()
+                        all_user_links = db.session.query(UnsubscribeLink, LinkedAccount.email_address).join(LinkedAccount, UnsubscribeLink.linked_account_id == LinkedAccount.id).filter(UnsubscribeLink.user_id == scan_user_id).order_by(UnsubscribeLink.added_at.desc()).all()
                         
                         final_data = {
                             "status": "completed",
                             "description": progress_update.get("description", f"Scan complete."),
                              "date_range": progress_update.get("date_range"),
-                            "new_links_found": newly_added_count,
+                            "new_links_found": new_links_found,
                             "links": [
                                 {
+                                    "id": l.id,
+                                    "email_address": email,
                                     "list_name": l.list_name, 
                                     "unsubscribe_url": l.unsubscribe_url,
                                     "added_at": l.added_at.isoformat(),
-                                    "unsubscribed": l.unsubscribed
-                                } for l in all_user_links
+                                    "unsubscribed": l.unsubscribed,
+                                    "unsubscribed_at": l.unsubscribed_at.isoformat() if l.unsubscribed_at else None,
+                                    "subject": l.subject,
+                                    "link_text": l.link_text
+                                } for l, email in all_user_links
                             ]
                         }
                         yield f"data: {json.dumps(final_data)}\n\n"

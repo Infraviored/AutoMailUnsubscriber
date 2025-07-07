@@ -333,6 +333,23 @@ button:disabled {
     color: #e0e0e0;
     font-weight: 500;
 }
+.summary-box {
+    background-color: #242424;
+    border: 1px solid #333;
+    padding: 10px 20px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+}
+.summary-box h4 {
+    margin-top: 10px;
+    margin-bottom: 10px;
+}
+.summary-box p {
+    margin: 5px 0;
+    font-size: 1em;
+    background-color: transparent;
+    padding: 0;
+}
 .domain-block {
     background-color: #242424;
     padding: 20px;
@@ -381,6 +398,20 @@ td:last-child, th:last-child {
 .status-icon.unsub-none { color: #8b949e; }
 .warning-icon { color: #f85149; }
 .clicked-mark { color: #2ea043; }
+.results-table .col-date { width: 15%; }
+.results-table .col-subject { width: 40%; }
+.results-table .col-link { width: 30%; }
+.results-table .col-action { width: 15%; text-align: center; }
+.action-btn {
+    /* existing styles */
+}
+tr.unsubscribed-row td {
+    color: #8b949e;
+    text-decoration: line-through;
+}
+tr.unsubscribed-row a {
+    color: #555;
+}
 
 /* --- Modal --- */
 .modal-overlay {
